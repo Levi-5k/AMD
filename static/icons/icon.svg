@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#fa2d48"/>
+      <stop offset="100%" style="stop-color:#fc3c5c"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="48" fill="url(#bg)"/>
+  <g fill="white">
+    <!-- Music note -->
+    <ellipse cx="96" cy="176" rx="28" ry="24"/>
+    <rect x="120" y="72" width="8" height="108"/>
+    <path d="M128 72 L128 88 L176 80 L176 64 Z"/>
+    <!-- Download arrow -->
+    <path d="M176 120 L176 160 L160 160 L176 184 L192 160 L176 160 L176 120 Z"/>
+  </g>
+</svg>

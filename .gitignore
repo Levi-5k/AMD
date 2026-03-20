@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Build artifacts
+build/
+dist/
+*.spec
+
+# User data & config
+config.yaml
+auto_download.json
+temp_tracks.json
+data/
+downloads/
+temp/
+wrapper-data/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Misc
+*.log
+*.update
+*.old
+
+# Executables & archives (release these as GitHub assets, not in the repo)
+*.exe
+*.zip

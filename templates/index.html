@@ -1,0 +1,848 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Apple Music Downloader</title>
+    
+    <!-- PWA Support -->
+    <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
+    <meta name="theme-color" content="#dc3545">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="AMD">
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/icon-192.png') }}">
+    
+    <link href="{{ url_for('static', filename='css/bootstrap.min.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/bootstrap-icons.css') }}" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v={{ cache_v }}">
+</head>
+<body>
+    <!-- Navbar -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark border-bottom">
+        <div class="container">
+            <a class="navbar-brand" href="/">
+                <i class="bi bi-music-note-list"></i> Apple Music Downloader
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto align-items-center">
+                    <li class="nav-item">
+                        <a class="nav-link active" href="/"><i class="bi bi-download"></i> Download</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" onclick="showFavorites()"><i class="bi bi-heart"></i> Favorites</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" onclick="showHistory()"><i class="bi bi-clock-history"></i> History</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/settings"><i class="bi bi-gear"></i> Settings</a>
+                    </li>
+                    <div class="nav-buttons-row">
+                        <li class="nav-item ms-lg-2">
+                            <button class="btn btn-sm btn-outline-secondary" id="themeToggle" onclick="toggleTheme()" title="Toggle theme">
+                                <i class="bi bi-moon-stars" id="themeIcon"></i>
+                            </button>
+                        </li>
+                        <li class="nav-item ms-lg-2">
+                            <button class="btn btn-sm btn-outline-secondary" id="notificationsToggle" onclick="toggleNotifications()" title="Toggle notifications">
+                                <i class="bi bi-bell" id="notificationIcon"></i>
+                            </button>
+                        </li>
+                    </div>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="container py-4">
+        <!-- Docker Status Alert -->
+        <div class="row mb-3" id="dockerAlert" style="display: none;">
+            <div class="col-12">
+                <div class="alert alert-danger alert-dismissible fade show mb-0" role="alert">
+                    <i class="bi bi-exclamation-octagon me-2"></i>
+                    <strong>Docker Not Running!</strong> 
+                    Docker Desktop must be running for downloads to work.
+                    <button type="button" class="btn btn-sm btn-light ms-3" id="startDockerBtn">
+                        <i class="bi bi-play-circle"></i> Start Docker
+                    </button>
+                    <span id="dockerStartingSpinner" class="ms-2" style="display: none;">
+                        <span class="spinner-border spinner-border-sm"></span> Starting...
+                    </span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Wrapper Status Alert -->
+        <div class="row mb-3" id="wrapperAlert" style="display: none;">
+            <div class="col-12">
+                <div class="alert alert-warning alert-dismissible fade show mb-0" role="alert">
+                    <i class="bi bi-exclamation-triangle me-2"></i>
+                    <strong>Wrapper Not Running!</strong> 
+                    The decryption service is required for downloads to work.
+                    <button type="button" class="btn btn-sm btn-danger ms-3" id="setupWrapperBtn">
+                        <i class="bi bi-gear"></i> Setup Now
+                    </button>
+                    <button type="button" class="btn btn-sm btn-warning ms-2" id="startWrapperBtn">
+                        <i class="bi bi-play-circle"></i> Start Wrapper
+                    </button>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Download Form -->
+        <div class="row mb-4">
+            <div class="col-12">
+                <div class="card bg-dark border-secondary">
+                    <div class="card-header d-flex justify-content-between align-items-center" 
+                         data-bs-toggle="collapse" data-bs-target="#urlSearchBody" 
+                         style="cursor: pointer;" role="button" aria-expanded="true" aria-controls="urlSearchBody">
+                        <h5 class="mb-0">
+                            <i class="bi bi-search"></i> Search & Download
+                            <i class="bi bi-chevron-down ms-2 collapse-icon"></i>
+                        </h5>
+                    </div>
+                    <div class="card-body collapse show" id="urlSearchBody">
+                        <form id="downloadForm">
+                            <div class="mb-3">
+                                <label for="urlInput" class="form-label">Apple Music URL or Search</label>
+                                <div class="input-group">
+                                    <span class="input-group-text"><i class="bi bi-search"></i></span>
+                                    <textarea class="form-control" id="urlInput" rows="1"
+                                           placeholder="Paste URL(s) or search for artists, albums, songs..." required
+                                           autocomplete="off" style="resize: none; overflow: hidden;"></textarea>
+                                    <button type="button" class="btn btn-outline-secondary" id="parseBtn">
+                                        <i class="bi bi-arrow-right"></i> Go
+                                    </button>
+                                </div>
+                                <div class="form-text" id="urlInputHelp">
+                                    Paste a URL or type to search. Paste multiple URLs (one per line) for batch download.
+                                </div>
+                            </div>
+
+                            <!-- Search Results Section -->
+                            <div id="searchResults" class="mb-3 d-none">
+                                <div class="card bg-dark border-secondary">
+                                    <div class="card-header d-flex justify-content-between align-items-center py-2">
+                                        <h6 class="mb-0" id="searchResultsTitle">Search Results</h6>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary" id="closeSearchBtn">
+                                            <i class="bi bi-x"></i>
+                                        </button>
+                                    </div>
+                                    <div class="card-body p-0">
+                                        <!-- Search Type Tabs -->
+                                        <ul class="nav nav-tabs nav-fill border-bottom border-secondary" id="searchTabs">
+                                            <li class="nav-item">
+                                                <button class="nav-link active" data-search-tab="all" type="button">
+                                                    All <span class="badge bg-secondary ms-1" id="searchCountAll">0</span>
+                                                </button>
+                                            </li>
+                                            <li class="nav-item">
+                                                <button class="nav-link" data-search-tab="artists" type="button">
+                                                    <i class="bi bi-person"></i> Artists <span class="badge bg-secondary ms-1" id="searchCountArtists">0</span>
+                                                </button>
+                                            </li>
+                                            <li class="nav-item">
+                                                <button class="nav-link" data-search-tab="albums" type="button">
+                                                    <i class="bi bi-disc"></i> Albums <span class="badge bg-secondary ms-1" id="searchCountAlbums">0</span>
+                                                </button>
+                                            </li>
+                                            <li class="nav-item">
+                                                <button class="nav-link" data-search-tab="songs" type="button">
+                                                    <i class="bi bi-music-note"></i> Songs <span class="badge bg-secondary ms-1" id="searchCountSongs">0</span>
+                                                </button>
+                                            </li>
+                                        </ul>
+                                        
+                                        <!-- Search Results Content -->
+                                        <div id="searchResultsContent" class="search-results-content" style="max-height: 400px; overflow-y: auto;">
+                                            <div class="text-center text-muted py-4">
+                                                <span class="spinner-border spinner-border-sm"></span> Searching...
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Artist Detail View -->
+                            <div id="artistDetail" class="mb-3 d-none">
+                                <div class="card bg-dark border-secondary">
+                                    <div class="card-header py-2">
+                                        <div class="d-flex justify-content-between align-items-center">
+                                            <div class="d-flex align-items-center gap-2">
+                                                <button type="button" class="btn btn-sm btn-outline-secondary" id="backToSearchBtn">
+                                                    <i class="bi bi-arrow-left"></i>
+                                                </button>
+                                                <h6 class="mb-0" id="artistDetailName">Artist</h6>
+                                            </div>
+                                            <span class="badge bg-primary" id="artistDetailGenre"></span>
+                                        </div>
+                                    </div>
+                                    <div class="card-body p-0">
+                                        <!-- Artist Sub-tabs -->
+                                        <ul class="nav nav-tabs nav-fill border-bottom border-secondary" id="artistTabs">
+                                            <li class="nav-item">
+                                                <button class="nav-link active" data-artist-tab="albums" type="button">
+                                                    <i class="bi bi-disc"></i> Albums <span class="badge bg-secondary ms-1" id="artistAlbumCount">0</span>
+                                                </button>
+                                            </li>
+                                            <li class="nav-item">
+                                                <button class="nav-link" data-artist-tab="songs" type="button">
+                                                    <i class="bi bi-music-note"></i> Top Songs <span class="badge bg-secondary ms-1" id="artistSongCount">0</span>
+                                                </button>
+                                            </li>
+                                        </ul>
+                                        
+                                        <!-- Artist Content -->
+                                        <div id="artistDetailContent" style="max-height: 400px; overflow-y: auto;">
+                                            <div class="text-center text-muted py-4">
+                                                <span class="spinner-border spinner-border-sm"></span> Loading...
+                                            </div>
+                                        </div>
+                                        
+                                        <!-- Selection Controls (for songs tab) -->
+                                        <div id="artistSelectionControls" class="p-2 border-top border-secondary d-none">
+                                            <div class="d-flex justify-content-between align-items-center">
+                                                <div class="btn-group btn-group-sm">
+                                                    <button type="button" class="btn btn-outline-primary" id="selectAllArtistSongs">
+                                                        <i class="bi bi-check-all"></i> Select All
+                                                    </button>
+                                                    <button type="button" class="btn btn-outline-secondary" id="deselectAllArtistSongs">
+                                                        <i class="bi bi-x"></i> None
+                                                    </button>
+                                                </div>
+                                                <span class="text-muted"><span id="selectedArtistSongCount">0</span> selected</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- URL Info (shows after parsing) -->
+                            <div id="urlInfo" class="mb-3 d-none">
+                                <div class="alert alert-info py-2">
+                                    <i class="bi bi-info-circle"></i>
+                                    <span id="urlInfoText"></span>
+                                </div>
+                            </div>
+
+                            <!-- Album Preview Section -->
+                            <div id="albumPreview" class="mb-4 d-none">
+                                <div class="card bg-dark border-secondary">
+                                    <div class="card-header py-2 d-none" id="albumPreviewHeader">
+                                        <div class="d-flex align-items-center gap-2">
+                                            <button type="button" class="btn btn-sm btn-outline-secondary" id="backFromAlbumBtn">
+                                                <i class="bi bi-arrow-left"></i>
+                                            </button>
+                                            <span class="text-muted">Back to search</span>
+                                        </div>
+                                    </div>
+                                    <div class="card-body">
+                                        <div class="row">
+                                            <div class="col-12 col-lg-3 text-center mb-3 mb-lg-0">
+                                                <img id="albumArt" src="" alt="Album Art" class="img-fluid rounded shadow" style="max-width: 200px;">
+                                            </div>
+                                            <div class="col-12 col-lg-9">
+                                                <h4 id="albumTitle" class="mb-1"></h4>
+                                                <p class="text-muted mb-2" id="albumArtist"></p>
+                                                <p class="small text-muted mb-3">
+                                                    <i class="bi bi-disc"></i> <span id="albumYear"></span> • 
+                                                    <i class="bi bi-music-note-list"></i> <span id="albumTrackCount"></span> tracks
+                                                </p>
+                                                
+                                                <div class="tracks-section">
+                                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                                        <h6 class="mb-0">Track Selection</h6>
+                                                        <div class="btn-group btn-group-sm">
+                                                            <button type="button" class="btn btn-outline-primary" id="selectAllTracks">
+                                                                <i class="bi bi-check-all"></i> All
+                                                            </button>
+                                                            <button type="button" class="btn btn-outline-secondary" id="deselectAllTracks">
+                                                                <i class="bi bi-x"></i> None
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                    <div id="tracksList" class="tracks-list" style="max-height: 300px; overflow-y: auto;"></div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="row mb-3 g-2" id="mainDownloadControls">
+                                <div class="col-12 col-sm-4 col-md-3">
+                                    <label for="qualitySelect" class="form-label">Quality</label>
+                                    <select class="form-select" id="qualitySelect">
+                                        <option value="alac" selected>ALAC (Lossless)</option>
+                                        <option value="aac">AAC (256kbps)</option>
+                                        <option value="atmos">Dolby Atmos</option>
+                                    </select>
+                                </div>
+                                <div class="col-12 col-sm-8 col-md-9 d-flex align-items-end mt-2 mt-sm-0">
+                                    <button type="submit" class="btn btn-primary btn-lg w-100" id="downloadBtn">
+                                        <i class="bi bi-download"></i> Start Download
+                                    </button>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Downloads & Files Section (Combined, Collapsible) -->
+        <div class="row">
+            <div class="col-12">
+                <div class="card bg-dark border-secondary">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0 flex-grow-1" style="cursor: pointer;" data-bs-toggle="collapse" data-bs-target="#downloadsCollapse">
+                            <i class="bi bi-folder2-open"></i> Downloads
+                            <i class="bi bi-chevron-down ms-2 collapse-icon"></i>
+                        </h5>
+                        <div class="d-flex gap-2" id="downloadsHeaderButtons">
+                            <button class="btn btn-sm btn-outline-danger" id="clearCompletedBtn">
+                                <i class="bi bi-trash"></i> Clear Queue
+                            </button>
+                            <button class="btn btn-sm btn-outline-secondary" id="refreshFilesBtn" onclick="loadFiles();">
+                                <i class="bi bi-arrow-clockwise"></i> Refresh
+                            </button>
+                        </div>
+                    </div>
+                    <div class="collapse show" id="downloadsCollapse">
+                        <div class="card-body p-0">
+                            <div id="filesList" class="list-group list-group-flush">
+                                <div class="text-center text-muted py-4">
+                                    <span class="spinner-border spinner-border-sm me-2"></span>
+                                    Loading...
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- My Library Section (Collapsible) -->
+        <div class="row mt-4">
+            <div class="col-12">
+                <div class="card bg-dark border-secondary">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0 flex-grow-1" style="cursor: pointer;" data-bs-toggle="collapse" data-bs-target="#libraryCollapse">
+                            <i class="bi bi-collection"></i> My Library
+                            <i class="bi bi-chevron-down ms-2 collapse-icon"></i>
+                        </h5>
+                        <div id="libraryHeaderButtons" class="d-none">
+                            <button class="btn btn-sm btn-outline-secondary" id="refreshLibraryBtn" onclick="checkAuthAndLoadLibrary();">
+                                <i class="bi bi-arrow-clockwise"></i> Refresh
+                            </button>
+                        </div>
+                    </div>
+                    <div class="collapse" id="libraryCollapse">
+                        <div class="card-body p-0">
+                            <!-- Sign In Required Message (shown when not authenticated) -->
+                            <div id="librarySignInRequired" class="d-none">
+                                <div class="text-center py-5">
+                                    <i class="bi bi-person-lock display-4 text-muted mb-3"></i>
+                                    <h5 class="text-muted">Sign In Required</h5>
+                                    <p class="text-muted mb-3">Access your Apple Music library by signing in with the wrapper service.</p>
+                                    <a href="/settings#wrapper-setup" class="btn btn-primary">
+                                        <i class="bi bi-box-arrow-in-right"></i> Sign In with Apple ID
+                                    </a>
+                                </div>
+                            </div>
+                            
+                            <!-- Playlist Grid View -->
+                            <div id="libraryPlaylistsView">
+                                <div id="libraryPlaylists" class="row g-3 p-3">
+                                    <div class="col-12 text-center text-muted py-3">
+                                        Click to expand and load your library playlists
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Playlist Tracks View (hidden by default) -->
+                            <div id="libraryTracksView" class="d-none">
+                                <div class="playlist-view-header">
+                                    <!-- Top row: playlist name and track count -->
+                                    <div class="playlist-view-title-row">
+                                        <h6 class="mb-0 playlist-view-name" id="playlistViewTitle">Playlist</h6>
+                                        <small class="text-muted" id="playlistViewCount">0 tracks</small>
+                                    </div>
+                                    <!-- Bottom row: back button, artwork, controls -->
+                                    <div class="playlist-view-controls-row">
+                                        <div class="d-flex align-items-center gap-2">
+                                            <button class="btn btn-sm btn-outline-secondary" id="backToPlaylistsBtn">
+                                                <i class="bi bi-arrow-left"></i> Back
+                                            </button>
+                                            <img id="playlistViewArt" src="" alt="" class="playlist-view-art">
+                                        </div>
+                                        <div class="d-flex align-items-center gap-2">
+                                            <div class="btn-group btn-group-sm">
+                                                <button type="button" class="btn btn-outline-primary" id="selectAllPlaylistTracks">
+                                                    <i class="bi bi-check-all"></i> All
+                                                </button>
+                                                <button type="button" class="btn btn-outline-secondary" id="deselectAllPlaylistTracks">
+                                                    <i class="bi bi-x"></i> None
+                                                </button>
+                                            </div>
+                                            <select class="form-select form-select-sm" id="playlistQualitySelect" style="width: auto;">
+                                                <option value="alac" selected>ALAC</option>
+                                                <option value="aac">AAC</option>
+                                                <option value="atmos">Atmos</option>
+                                            </select>
+                                            <button type="button" class="btn btn-sm btn-primary" id="downloadPlaylistBtn">
+                                                <i class="bi bi-download"></i> Download
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div id="playlistTracksList" class="playlist-tracks-list">
+                                    <div class="text-center text-muted py-5">
+                                        <span class="spinner-border spinner-border-sm me-2"></span>
+                                        Loading tracks...
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Download Output Modal -->
+    <div class="modal fade" id="outputModal" tabindex="-1">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content bg-dark">
+                <div class="modal-header">
+                    <h5 class="modal-title">Download Output</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <pre id="outputContent" class="bg-black text-success p-3 rounded" style="max-height: 400px; overflow-y: auto;"></pre>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3">
+        <div id="toast" class="toast" role="alert">
+            <div class="toast-header">
+                <i class="bi bi-info-circle me-2"></i>
+                <strong class="me-auto" id="toastTitle">Notification</strong>
+                <button type="button" class="btn-close" data-bs-dismiss="toast"></button>
+            </div>
+            <div class="toast-body" id="toastBody"></div>
+        </div>
+    </div>
+
+    <!-- Info Modal (for file/download details) -->
+    <div class="modal fade" id="infoModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title" id="infoModalTitle">Info</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body" id="infoModalBody">
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Wrapper Setup Wizard Modal -->
+    <div class="modal fade" id="setupWizardModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title"><i class="bi bi-shield-lock me-2"></i>Apple Music Setup</h5>
+                </div>
+                <div class="modal-body">
+                    <!-- Step 1: Welcome -->
+                    <div id="setupStep1" class="setup-step">
+                        <div class="text-center mb-4">
+                            <i class="bi bi-music-note-beamed display-1 text-danger"></i>
+                            <h4 class="mt-3">Welcome to Apple Music Downloader</h4>
+                            <p class="text-muted">First-time setup is required to enable downloads.</p>
+                        </div>
+                        <div class="alert alert-info">
+                            <i class="bi bi-info-circle me-2"></i>
+                            <strong>What you'll need:</strong>
+                            <ul class="mb-0 mt-2">
+                                <li>Your Apple ID email</li>
+                                <li>Your Apple ID password</li>
+                                <li>Access to your device for 2FA code</li>
+                            </ul>
+                        </div>
+                        <div class="alert alert-warning">
+                            <i class="bi bi-exclamation-triangle me-2"></i>
+                            <strong>Note:</strong> If your password has special characters, consider using an 
+                            <a href="https://appleid.apple.com/account/manage" target="_blank">App-Specific Password</a>.
+                        </div>
+                        <button class="btn btn-danger w-100" onclick="setupWizard.goToStep(2)">
+                            <i class="bi bi-arrow-right me-2"></i>Get Started
+                        </button>
+                    </div>
+
+                    <!-- Step 2: Enter Credentials -->
+                    <div id="setupStep2" class="setup-step" style="display: none;">
+                        <h5 class="mb-3"><i class="bi bi-person-circle me-2"></i>Enter Apple ID Credentials</h5>
+                        <form id="setupCredentialsForm">
+                            <div class="mb-3">
+                                <label for="setupEmail" class="form-label">Apple ID (Email)</label>
+                                <input type="email" class="form-control" id="setupEmail" required 
+                                       placeholder="your.email@example.com">
+                            </div>
+                            <div class="mb-3">
+                                <label for="setupPassword" class="form-label">Password</label>
+                                <div class="input-group">
+                                    <input type="password" class="form-control" id="setupPassword" required 
+                                           placeholder="Your Apple ID password">
+                                    <button class="btn btn-outline-secondary" type="button" onclick="setupWizard.togglePassword()">
+                                        <i class="bi bi-eye" id="passwordToggleIcon"></i>
+                                    </button>
+                                </div>
+                                <div class="form-text">Your credentials are sent directly to Apple, not stored on any server.</div>
+                            </div>
+                            <div class="d-flex gap-2">
+                                <button type="button" class="btn btn-outline-secondary" onclick="setupWizard.goToStep(1)">
+                                    <i class="bi bi-arrow-left"></i> Back
+                                </button>
+                                <button type="submit" class="btn btn-danger flex-grow-1" id="setupLoginBtn">
+                                    <i class="bi bi-box-arrow-in-right me-2"></i>Sign In
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+
+                    <!-- Step 3: 2FA Code -->
+                    <div id="setupStep3" class="setup-step" style="display: none;">
+                        <h5 class="mb-3"><i class="bi bi-shield-check me-2"></i>Two-Factor Authentication</h5>
+                        <div class="alert alert-info">
+                            <i class="bi bi-phone me-2"></i>
+                            A verification code has been sent to your trusted devices.
+                        </div>
+                        <form id="setup2FAForm">
+                            <div class="mb-3">
+                                <label for="setup2FACode" class="form-label">Enter 6-digit code</label>
+                                <input type="text" class="form-control form-control-lg text-center" 
+                                       id="setup2FACode" maxlength="6" pattern="[0-9]{6}" required
+                                       placeholder="000000" style="font-size: 2rem; letter-spacing: 0.5rem;">
+                            </div>
+                            <button type="submit" class="btn btn-danger w-100" id="setup2FABtn">
+                                <i class="bi bi-check-circle me-2"></i>Verify Code
+                            </button>
+                        </form>
+                        <div id="setupProgress" class="mt-3" style="display: none;">
+                            <div class="d-flex align-items-center">
+                                <div class="spinner-border spinner-border-sm text-danger me-2"></div>
+                                <span id="setupProgressText">Verifying...</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Step 4: Success -->
+                    <div id="setupStep4" class="setup-step" style="display: none;">
+                        <div class="text-center">
+                            <i class="bi bi-check-circle display-1 text-success"></i>
+                            <h4 class="mt-3">Setup Complete!</h4>
+                            <p class="text-muted">Your Apple Music account is now connected.</p>
+                            <div class="alert alert-success">
+                                <i class="bi bi-info-circle me-2"></i>
+                                The wrapper service is starting. You can now download music!
+                            </div>
+                            <button class="btn btn-success w-100" onclick="setupWizard.finish()">
+                                <i class="bi bi-download me-2"></i>Start Downloading
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Step 5: Error -->
+                    <div id="setupStep5" class="setup-step" style="display: none;">
+                        <div class="text-center">
+                            <i class="bi bi-x-circle display-1 text-danger"></i>
+                            <h4 class="mt-3">Setup Failed</h4>
+                            <p class="text-muted" id="setupErrorMessage">An error occurred during setup.</p>
+                            <div class="d-flex gap-2 justify-content-center">
+                                <button class="btn btn-outline-secondary" onclick="setupWizard.goToStep(1)">
+                                    <i class="bi bi-arrow-counterclockwise me-2"></i>Try Again
+                                </button>
+                                <button class="btn btn-secondary" data-bs-dismiss="modal">
+                                    Close
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Favorites Modal -->
+    <div class="modal fade" id="favoritesModal" tabindex="-1">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content bg-dark">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title"><i class="bi bi-heart me-2"></i>Favorites</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <ul class="nav nav-tabs mb-3" id="favoritesTabs">
+                        <li class="nav-item">
+                            <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#favArtists">Artists</button>
+                        </li>
+                        <li class="nav-item">
+                            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#favAlbums">Albums</button>
+                        </li>
+                        <li class="nav-item">
+                            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#favPlaylists">Playlists</button>
+                        </li>
+                        <li class="nav-item">
+                            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#favSongs">Songs</button>
+                        </li>
+                    </ul>
+                    <div class="tab-content">
+                        <div class="tab-pane fade show active" id="favArtists">
+                            <div id="favArtistsList" class="row g-3"></div>
+                        </div>
+                        <div class="tab-pane fade" id="favAlbums">
+                            <div id="favAlbumsList" class="row g-3"></div>
+                        </div>
+                        <div class="tab-pane fade" id="favPlaylists">
+                            <div id="favPlaylistsList" class="row g-3"></div>
+                        </div>
+                        <div class="tab-pane fade" id="favSongs">
+                            <div id="favSongsList" class="list-group"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- History Modal -->
+    <div class="modal fade" id="historyModal" tabindex="-1">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content bg-dark">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title"><i class="bi bi-clock-history me-2"></i>Download History</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <!-- Stats Cards -->
+                    <div class="row g-3 mb-4">
+                        <div class="col-md-3">
+                            <div class="card bg-secondary bg-opacity-25 text-center">
+                                <div class="card-body py-2">
+                                    <h3 class="mb-0" id="historyTotalDownloads">0</h3>
+                                    <small class="text-muted">Total Downloads</small>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="card bg-secondary bg-opacity-25 text-center">
+                                <div class="card-body py-2">
+                                    <h3 class="mb-0" id="historyTotalSize">0 GB</h3>
+                                    <small class="text-muted">Total Size</small>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="card bg-secondary bg-opacity-25 text-center">
+                                <div class="card-body py-2">
+                                    <h3 class="mb-0" id="historyAlbums">0</h3>
+                                    <small class="text-muted">Albums</small>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="card bg-secondary bg-opacity-25 text-center">
+                                <div class="card-body py-2">
+                                    <h3 class="mb-0" id="historySongs">0</h3>
+                                    <small class="text-muted">Songs</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h6 class="mb-0">Recent Downloads</h6>
+                        <button class="btn btn-sm btn-outline-danger" onclick="clearHistory()">
+                            <i class="bi bi-trash"></i> Clear History
+                        </button>
+                    </div>
+                    <div id="historyList" class="list-group"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Metadata Editor Modal -->
+    <div class="modal fade" id="metadataModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content bg-dark">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title"><i class="bi bi-tags me-2"></i>Edit Metadata</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="metadataForm">
+                        <input type="hidden" id="metadataFilePath">
+                        <div class="mb-3">
+                            <label class="form-label">Title</label>
+                            <input type="text" class="form-control" id="metaTitle">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Artist</label>
+                            <input type="text" class="form-control" id="metaArtist">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Album</label>
+                            <input type="text" class="form-control" id="metaAlbum">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Album Artist</label>
+                            <input type="text" class="form-control" id="metaAlbumArtist">
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Year</label>
+                                <input type="text" class="form-control" id="metaYear">
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Genre</label>
+                                <input type="text" class="form-control" id="metaGenre">
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Track #</label>
+                                <input type="text" class="form-control" id="metaTrack">
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Disc #</label>
+                                <input type="text" class="form-control" id="metaDisc">
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-danger" onclick="saveMetadata()">
+                        <i class="bi bi-check"></i> Save Changes
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- New Releases Modal -->
+    <div class="modal fade" id="newReleasesModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content bg-dark">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title"><i class="bi bi-stars me-2"></i>New Releases</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="newReleasesList" class="row g-3"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Duplicate Scanner Modal -->
+    <div class="modal fade" id="duplicatesModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content bg-dark">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title"><i class="bi bi-files me-2"></i>Duplicate Files</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="duplicatesList" class="list-group"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3">
+        <div id="toast" class="toast" role="alert">
+            <div class="toast-header">
+                <i class="bi bi-info-circle me-2" id="toastIcon"></i>
+                <strong class="me-auto" id="toastTitle">Notification</strong>
+                <button type="button" class="btn-close" data-bs-dismiss="toast"></button>
+            </div>
+            <div class="toast-body" id="toastBody"></div>
+        </div>
+    </div>
+
+    <!-- Package Installation Info Box -->
+    <div id="packageInstallBox" class="position-fixed" style="bottom: 20px; left: 20px; z-index: 1050; display: none;">
+        <div class="card bg-dark border-secondary shadow" style="width: 320px;">
+            <div class="card-header border-secondary d-flex justify-content-between align-items-center py-2">
+                <span><i class="bi bi-box-seam me-2"></i>Package Installation</span>
+                <button type="button" class="btn-close btn-close-white btn-sm" onclick="hidePackageBox()"></button>
+            </div>
+            <div class="card-body py-2">
+                <div id="packageInstallStatus">
+                    <div class="d-flex align-items-center mb-2">
+                        <div class="spinner-border spinner-border-sm text-primary me-2" id="packageSpinner"></div>
+                        <span id="packageCurrentText">Checking packages...</span>
+                    </div>
+                    <div class="progress mb-2" style="height: 8px;">
+                        <div class="progress-bar" id="packageProgressBar" role="progressbar" style="width: 0%"></div>
+                    </div>
+                    <small class="text-muted" id="packageProgressText">0 / 0 packages</small>
+                </div>
+                <div id="packageInstallComplete" style="display: none;">
+                    <div class="d-flex align-items-center text-success mb-2">
+                        <i class="bi bi-check-circle-fill me-2"></i>
+                        <span>All packages installed!</span>
+                    </div>
+                    <button class="btn btn-primary btn-sm w-100" id="restartServerBtn" onclick="restartServer()">
+                        <i class="bi bi-arrow-clockwise me-1"></i>Restart Server
+                    </button>
+                </div>
+                <div id="packageInstallFailed" style="display: none;">
+                    <div class="d-flex align-items-center text-warning mb-2">
+                        <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                        <span>Some packages failed</span>
+                    </div>
+                    <small class="text-muted" id="failedPackagesList"></small>
+                    <button class="btn btn-warning btn-sm w-100 mt-2" onclick="retryPackageInstall()">
+                        <i class="bi bi-arrow-repeat me-1"></i>Retry
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/bootstrap.bundle.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}?v={{ cache_v }}"></script>
+    
+    <!-- Service Worker Registration -->
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/static/sw.js')
+                .then(reg => console.log('Service Worker registered'))
+                .catch(err => console.log('Service Worker registration failed:', err));
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,966 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Settings - Apple Music Downloader</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <!-- Navbar -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark border-bottom">
+        <div class="container">
+            <a class="navbar-brand" href="/">
+                <i class="bi bi-music-note-list"></i> Apple Music Downloader
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto align-items-center">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/"><i class="bi bi-download"></i> Download</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" onclick="showFavorites()"><i class="bi bi-heart"></i> Favorites</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" onclick="showHistory()"><i class="bi bi-clock-history"></i> History</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link active" href="/settings"><i class="bi bi-gear"></i> Settings</a>
+                    </li>
+                    <div class="nav-buttons-row">
+                        <li class="nav-item ms-lg-2">
+                            <button class="btn btn-sm btn-outline-secondary" id="themeToggle" onclick="toggleTheme()" title="Toggle theme">
+                                <i class="bi bi-moon-stars" id="themeIcon"></i>
+                            </button>
+                        </li>
+                        <li class="nav-item ms-lg-2">
+                            <button class="btn btn-sm btn-outline-secondary" id="notificationsToggle" onclick="toggleNotifications()" title="Toggle notifications">
+                                <i class="bi bi-bell" id="notificationIcon"></i>
+                            </button>
+                        </li>
+                    </div>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="container py-4">
+        <div class="row">
+            <div class="col-12">
+                <div class="d-flex justify-content-between align-items-center mb-4">
+                    <h2><i class="bi bi-gear"></i> Settings</h2>
+                    <button type="button" class="btn btn-primary" id="saveSettingsBtn">
+                        <i class="bi bi-save"></i> Save Settings
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <form id="settingsForm">
+            <!-- Downloader Settings (NEW - First Priority) -->
+            <div class="row mb-4">
+                <div class="col-12">
+                    <div class="card bg-dark border-danger">
+                        <div class="card-header bg-danger bg-opacity-25">
+                            <h5 class="mb-0"><i class="bi bi-gear-wide-connected"></i> Downloader Setup (Required)</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="alert alert-info">
+                                <i class="bi bi-info-circle"></i>
+                                <strong>Choose how to run the downloader:</strong> Either use Docker (recommended) or point to a local installation.
+                            </div>
+                            <div class="mb-3">
+                                <div class="form-check form-switch">
+                                    <input class="form-check-input" type="checkbox" id="useDocker"
+                                           {{ 'checked' if config.get('use-docker', True) else '' }}>
+                                    <label class="form-check-label" for="useDocker">
+                                        <strong>Use Docker</strong> (Recommended - requires Docker Desktop installed)
+                                    </label>
+                                </div>
+                                <div class="form-text">
+                                    If enabled, the app will use the Docker image <code>ghcr.io/zhaarey/apple-music-downloader</code>
+                                </div>
+                            </div>
+                            <div class="mb-3" id="downloaderPathGroup">
+                                <label for="downloaderPath" class="form-label">Local Downloader Path</label>
+                                <input type="text" class="form-control" id="downloaderPath" 
+                                       value="{{ config.get('downloader-path', '') }}"
+                                       placeholder="C:\path\to\apple-music-downloader">
+                                <div class="form-text">
+                                    Path to the apple-music-downloader folder containing main.go (only needed if Docker is disabled)
+                                </div>
+                            </div>
+                            <div class="alert alert-warning mb-0">
+                                <i class="bi bi-exclamation-triangle"></i>
+                                <strong>Note:</strong> You also need the <a href="https://github.com/WorldObservationLog/wrapper" target="_blank" class="alert-link">wrapper</a> 
+                                decryption service running at <code>127.0.0.1:10020</code>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Authentication Settings -->
+            <div class="row mb-4">
+                <div class="col-12">
+                    <div class="card bg-dark border-secondary">
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="bi bi-key"></i> Authentication</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="alert alert-warning">
+                                <i class="bi bi-exclamation-triangle"></i>
+                                <strong>Important:</strong> You need a valid <code>media-user-token</code> for downloading lyrics and some content. 
+                                Get it from Apple Music web player's cookies.
+                            </div>
+                            <div class="mb-3">
+                                <label for="mediaUserToken" class="form-label">Media User Token</label>
+                                <textarea class="form-control font-monospace" id="mediaUserToken" rows="3" 
+                                          placeholder="Paste your media-user-token here...">{{ config.get('media-user-token', '') }}</textarea>
+                                <div class="form-text">
+                                    Get this from: Developer Tools → Application → Cookies → https://music.apple.com → media-user-token
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <label for="authToken" class="form-label">Authorization Token (Optional)</label>
+                                <input type="text" class="form-control font-monospace" id="authToken" 
+                                       value="{{ config.get('authorization-token', '') }}"
+                                       placeholder="Bearer eyJ...">
+                                <div class="form-text">
+                                    Usually auto-fetched. Only set manually if needed.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Region Settings -->
+            <div class="row mb-4">
+                <div class="col-md-6">
+                    <div class="card bg-dark border-secondary h-100">
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="bi bi-globe"></i> Region</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <label for="storefront" class="form-label">Storefront</label>
+                                <select class="form-select" id="storefront">
+                                    <option value="us" {{ 'selected' if config.get('storefront') == 'us' else '' }}>United States (us)</option>
+                                    <option value="gb" {{ 'selected' if config.get('storefront') == 'gb' else '' }}>United Kingdom (gb)</option>
+                                    <option value="ca" {{ 'selected' if config.get('storefront') == 'ca' else '' }}>Canada (ca)</option>
+                                    <option value="au" {{ 'selected' if config.get('storefront') == 'au' else '' }}>Australia (au)</option>
+                                    <option value="de" {{ 'selected' if config.get('storefront') == 'de' else '' }}>Germany (de)</option>
+                                    <option value="fr" {{ 'selected' if config.get('storefront') == 'fr' else '' }}>France (fr)</option>
+                                    <option value="jp" {{ 'selected' if config.get('storefront') == 'jp' else '' }}>Japan (jp)</option>
+                                    <option value="kr" {{ 'selected' if config.get('storefront') == 'kr' else '' }}>South Korea (kr)</option>
+                                    <option value="cn" {{ 'selected' if config.get('storefront') == 'cn' else '' }}>China (cn)</option>
+                                    <option value="ru" {{ 'selected' if config.get('storefront') == 'ru' else '' }}>Russia (ru)</option>
+                                </select>
+                            </div>
+                            <div class="mb-3">
+                                <label for="language" class="form-label">Language</label>
+                                <input type="text" class="form-control" id="language" 
+                                       value="{{ config.get('language', 'en-US') }}"
+                                       placeholder="en-US">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Lyrics Settings -->
+                <div class="col-md-6">
+                    <div class="card bg-dark border-secondary h-100">
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="bi bi-file-text"></i> Lyrics</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <label for="lrcType" class="form-label">Lyrics Type</label>
+                                <select class="form-select" id="lrcType">
+                                    <option value="syllable-lyrics" {{ 'selected' if config.get('lrc-type') == 'syllable-lyrics' else '' }}>Syllable Lyrics (Word-by-word)</option>
+                                    <option value="lyrics" {{ 'selected' if config.get('lrc-type') == 'lyrics' else '' }}>Standard Lyrics</option>
+                                </select>
+                            </div>
+                            <div class="mb-3">
+                                <label for="lrcFormat" class="form-label">Lyrics Format</label>
+                                <select class="form-select" id="lrcFormat">
+                                    <option value="lrc" {{ 'selected' if config.get('lrc-format') == 'lrc' else '' }}>LRC</option>
+                                    <option value="ttml" {{ 'selected' if config.get('lrc-format') == 'ttml' else '' }}>TTML</option>
+                                </select>
+                            </div>
+                            <div class="form-check mb-2">
+                                <input class="form-check-input" type="checkbox" id="saveLrcFile"
+                                       {{ 'checked' if config.get('save-lrc-file', True) else '' }}>
+                                <label class="form-check-label" for="saveLrcFile">Save LRC file</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="embedLrc"
+                                       {{ 'checked' if config.get('embed-lrc', True) else '' }}>
+                                <label class="form-check-label" for="embedLrc">Embed lyrics in file</label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Cover & Quality Settings -->
+            <div class="row mb-4">
+                <div class="col-md-6">
+                    <div class="card bg-dark border-secondary h-100">
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="bi bi-image"></i> Cover Art</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <label for="coverSize" class="form-label">Cover Size</label>
+                                <select class="form-select" id="coverSize">
+                                    <option value="600" {{ 'selected' if config.get('cover-size') == '600' else '' }}>600x600</option>
+                                    <option value="1200" {{ 'selected' if config.get('cover-size') == '1200' else '' }}>1200x1200</option>
+                                    <option value="1400" {{ 'selected' if config.get('cover-size') == '1400' else '' }}>1400x1400</option>
+                                    <option value="3000" {{ 'selected' if config.get('cover-size') == '3000' else '' }}>3000x3000</option>
+                                </select>
+                            </div>
+                            <div class="mb-3">
+                                <label for="coverFormat" class="form-label">Cover Format</label>
+                                <select class="form-select" id="coverFormat">
+                                    <option value="jpg" {{ 'selected' if config.get('cover-format') == 'jpg' else '' }}>JPEG</option>
+                                    <option value="png" {{ 'selected' if config.get('cover-format') == 'png' else '' }}>PNG</option>
+                                </select>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="embedCover"
+                                       {{ 'checked' if config.get('embed-cover', True) else '' }}>
+                                <label class="form-check-label" for="embedCover">Embed cover in file</label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-md-6">
+                    <div class="card bg-dark border-secondary h-100">
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="bi bi-speedometer2"></i> Quality Limits</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="form-check form-switch mb-3">
+                                <input class="form-check-input" type="checkbox" id="debugMode"
+                                       {{ 'checked' if config.get('debug-mode', False) else '' }}>
+                                <label class="form-check-label" for="debugMode">
+                                    <strong>Debug Mode</strong> - Show detailed output during downloads
+                                </label>
+                            </div>
+                            <hr>
+                            <div class="mb-3">
+                                <label for="alacMax" class="form-label">ALAC Max Quality (0 = best)</label>
+                                <input type="number" class="form-control" id="alacMax" 
+                                       value="{{ config.get('alac-max', 0) }}" min="0">
+                            </div>
+                            <div class="mb-3">
+                                <label for="atmosMax" class="form-label">Atmos Max Quality (0 = best)</label>
+                                <input type="number" class="form-control" id="atmosMax" 
+                                       value="{{ config.get('atmos-max', 0) }}" min="0">
+                            </div>
+                            <div class="mb-3">
+                                <label for="aacType" class="form-label">AAC Type</label>
+                                <select class="form-select" id="aacType">
+                                    <option value="aac" {{ 'selected' if config.get('aac-type') == 'aac' else '' }}>AAC</option>
+                                    <option value="aac-binaural" {{ 'selected' if config.get('aac-type') == 'aac-binaural' else '' }}>AAC Binaural</option>
+                                    <option value="aac-downmix" {{ 'selected' if config.get('aac-type') == 'aac-downmix' else '' }}>AAC Downmix</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Download Paths -->
+            <div class="row mb-4">
+                <div class="col-12">
+                    <div class="card bg-dark border-secondary">
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="bi bi-folder"></i> Download Paths</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="row mb-3">
+                                <div class="col-12">
+                                    <label for="downloadsDir" class="form-label">Base Download Directory</label>
+                                    <div class="input-group">
+                                        <input type="text" class="form-control" id="downloadsDir" 
+                                               value="{{ config.get('downloads-dir', '') }}"
+                                               placeholder="Leave empty for default (./downloads)">
+                                        <button type="button" class="btn btn-outline-secondary" onclick="openFolderBrowser('downloadsDir')">
+                                            <i class="bi bi-folder2-open"></i>
+                                        </button>
+                                    </div>
+                                    <div class="form-text">Main folder where all downloads are saved. Leave empty to use the default ./downloads folder.</div>
+                                </div>
+                            </div>
+                            <hr class="my-3">
+                            <p class="text-muted small mb-3"><i class="bi bi-info-circle"></i> The folders below are subfolders within the base directory. Disable to save all formats to the base directory.</p>
+                            <div class="row">
+                                <div class="col-md-4 mb-3">
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <label for="alacFolder" class="form-label mb-0">ALAC Save Folder</label>
+                                        <div class="form-check form-switch mb-0">
+                                            <input class="form-check-input" type="checkbox" id="alacFolderEnabled"
+                                                   {{ 'checked' if config.get('alac-folder-enabled', True) else '' }}
+                                                   onchange="toggleFolderInput('alacFolder', this.checked)">
+                                        </div>
+                                    </div>
+                                    <div class="input-group">
+                                        <input type="text" class="form-control" id="alacFolder" 
+                                               value="{{ config.get('alac-save-folder', '/downloads') }}"
+                                               {{ 'disabled' if not config.get('alac-folder-enabled', True) else '' }}>
+                                        <button type="button" class="btn btn-outline-secondary" onclick="openFolderBrowser('alacFolder')">
+                                            <i class="bi bi-folder2-open"></i>
+                                        </button>
+                                    </div>
+                                    <div class="form-text">Subfolder for ALAC files</div>
+                                </div>
+                                <div class="col-md-4 mb-3">
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <label for="atmosFolder" class="form-label mb-0">Atmos Save Folder</label>
+                                        <div class="form-check form-switch mb-0">
+                                            <input class="form-check-input" type="checkbox" id="atmosFolderEnabled"
+                                                   {{ 'checked' if config.get('atmos-folder-enabled', True) else '' }}
+                                                   onchange="toggleFolderInput('atmosFolder', this.checked)">
+                                        </div>
+                                    </div>
+                                    <div class="input-group">
+                                        <input type="text" class="form-control" id="atmosFolder" 
+                                               value="{{ config.get('atmos-save-folder', '/downloads/atmos') }}"
+                                               {{ 'disabled' if not config.get('atmos-folder-enabled', True) else '' }}>
+                                        <button type="button" class="btn btn-outline-secondary" onclick="openFolderBrowser('atmosFolder')">
+                                            <i class="bi bi-folder2-open"></i>
+                                        </button>
+                                    </div>
+                                    <div class="form-text">Subfolder for Atmos files</div>
+                                </div>
+                                <div class="col-md-4 mb-3">
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <label for="aacFolder" class="form-label mb-0">AAC Save Folder</label>
+                                        <div class="form-check form-switch mb-0">
+                                            <input class="form-check-input" type="checkbox" id="aacFolderEnabled"
+                                                   {{ 'checked' if config.get('aac-folder-enabled', True) else '' }}
+                                                   onchange="toggleFolderInput('aacFolder', this.checked)">
+                                        </div>
+                                    </div>
+                                    <div class="input-group">
+                                        <input type="text" class="form-control" id="aacFolder" 
+                                               value="{{ config.get('aac-save-folder', '/downloads/aac') }}"
+                                               {{ 'disabled' if not config.get('aac-folder-enabled', True) else '' }}>
+                                        <button type="button" class="btn btn-outline-secondary" onclick="openFolderBrowser('aacFolder')">
+                                            <i class="bi bi-folder2-open"></i>
+                                        </button>
+                                    </div>
+                                    <div class="form-text">Subfolder for AAC files</div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <label for="artistFolderFormat" class="form-label mb-0">Artist Folder Format</label>
+                                        <div class="form-check form-switch mb-0">
+                                            <input class="form-check-input" type="checkbox" id="artistFolderEnabled"
+                                                   {{ 'checked' if config.get('artist-folder-enabled', True) else '' }}
+                                                   onchange="toggleFolderInput('artistFolderFormat', this.checked)">
+                                        </div>
+                                    </div>
+                                    <input type="text" class="form-control" id="artistFolderFormat" 
+                                           value="{{ config.get('artist-folder-format', '{ArtistName}') }}"
+                                           {{ 'disabled' if not config.get('artist-folder-enabled', True) else '' }}>
+                                    <div class="form-text">Variables: {ArtistName}. Disable to save directly in format folder.</div>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <label for="albumFolderFormat" class="form-label mb-0">Album Folder Format</label>
+                                        <div class="form-check form-switch mb-0">
+                                            <input class="form-check-input" type="checkbox" id="albumFolderEnabled"
+                                                   {{ 'checked' if config.get('album-folder-enabled', True) else '' }}
+                                                   onchange="toggleFolderInput('albumFolderFormat', this.checked)">
+                                        </div>
+                                    </div>
+                                    <input type="text" class="form-control" id="albumFolderFormat" 
+                                           value="{{ config.get('album-folder-format', '{AlbumName}') }}"
+                                           {{ 'disabled' if not config.get('album-folder-enabled', True) else '' }}>
+                                    <div class="form-text">Variables: {ArtistName}, {AlbumName}, {Year}, {UPC}. Disable to save directly in artist folder.</div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label for="songFileFormat" class="form-label">Song File Format</label>
+                                    <input type="text" class="form-control" id="songFileFormat" 
+                                           value="{{ config.get('song-file-format', '{TrackNumber}. {SongName}') }}">
+                                    <div class="form-text">Variables: {TrackNumber}, {SongName}, {ArtistName}, {ISRC}</div>
+                                </div>
+                            </div>
+                            <hr class="my-3">
+                            <h6 class="text-muted mb-3"><i class="bi bi-music-note-list"></i> Playlist Organization</h6>
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <div class="form-check form-switch">
+                                        <input class="form-check-input" type="checkbox" id="playlistFolderEnabled"
+                                               {{ 'checked' if config.get('playlist-folder-enabled', False) else '' }}
+                                               onchange="togglePlaylistFolderOptions(this.checked)">
+                                        <label class="form-check-label" for="playlistFolderEnabled">
+                                            <strong>Organize by Playlist</strong>
+                                        </label>
+                                    </div>
+                                    <div class="form-text">
+                                        When enabled, tracks downloaded from library playlists will be saved in a folder named after the playlist.
+                                    </div>
+                                </div>
+                                <div class="col-md-6 mb-3" id="playlistFolderFormatGroup">
+                                    <label for="playlistFolderFormat" class="form-label">Playlist Folder Format</label>
+                                    <input type="text" class="form-control" id="playlistFolderFormat" 
+                                           value="{{ config.get('playlist-folder-format', 'Playlists/{PlaylistName}') }}"
+                                           {{ 'disabled' if not config.get('playlist-folder-enabled', False) else '' }}>
+                                    <div class="form-text">Variables: {PlaylistName}. Relative to base download directory.</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Advanced Settings -->
+            <div class="row mb-4">
+                <div class="col-12">
+                    <div class="card bg-dark border-secondary">
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="bi bi-sliders"></i> Advanced Settings</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-4 mb-3">
+                                    <label for="getM3u8Mode" class="form-label">M3U8 Mode</label>
+                                    <select class="form-select" id="getM3u8Mode">
+                                        <option value="api" {{ 'selected' if config.get('get-m3u8-mode') == 'api' else '' }}>API</option>
+                                        <option value="device" {{ 'selected' if config.get('get-m3u8-mode') == 'device' else '' }}>Device</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-4 mb-3">
+                                    <label for="decryptPort" class="form-label">Decrypt M3U8 Port</label>
+                                    <input type="text" class="form-control" id="decryptPort" 
+                                           value="{{ config.get('decrypt-m3u8-port', '127.0.0.1:10020') }}">
+                                </div>
+                                <div class="col-md-4 mb-3">
+                                    <label for="getM3u8Port" class="form-label">Get M3U8 Port</label>
+                                    <input type="text" class="form-control" id="getM3u8Port" 
+                                           value="{{ config.get('get-m3u8-port', '127.0.0.1:20020') }}">
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-4 mb-3">
+                                    <label for="maxMemoryLimit" class="form-label">Max Memory Limit (MB)</label>
+                                    <input type="number" class="form-control" id="maxMemoryLimit" 
+                                           value="{{ config.get('max-memory-limit', 512) }}" min="64">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Auto Download Settings -->
+            <div class="row mb-4">
+                <div class="col-12">
+                    <div class="card bg-dark border-primary">
+                        <div class="card-header bg-primary bg-opacity-25">
+                            <h5 class="mb-0"><i class="bi bi-arrow-repeat"></i> Auto Download</h5>
+                        </div>
+                        <div class="card-body">
+                            <!-- Sign In Required Message (shown when not authenticated) -->
+                            <div id="autoDownloadSignInRequired" class="d-none">
+                                <div class="text-center py-4">
+                                    <i class="bi bi-person-lock display-5 text-muted mb-3"></i>
+                                    <h5 class="text-muted">Sign In Required</h5>
+                                    <p class="text-muted mb-3">Auto Download requires signing in with your Apple ID to access your library playlists.</p>
+                                    <a href="#wrapper-setup" class="btn btn-primary" onclick="scrollToWrapperSetup()">
+                                        <i class="bi bi-box-arrow-in-right"></i> Sign In with Apple ID
+                                    </a>
+                                </div>
+                            </div>
+                            
+                            <!-- Auto Download Content (shown when authenticated) -->
+                            <div id="autoDownloadContent">
+                                <div class="alert alert-info">
+                                    <i class="bi bi-info-circle"></i>
+                                    Automatically check your playlists for new songs and download them. Playlists are automatically added when you download all tracks from them.
+                                </div>
+                            
+                                <div class="row mb-3">
+                                    <div class="col-md-6">
+                                        <div class="form-check form-switch mb-3">
+                                            <input class="form-check-input" type="checkbox" id="autoDownloadEnabled"
+                                                   {{ 'checked' if config.get('auto-download', {}).get('enabled', False) else '' }}>
+                                            <label class="form-check-label" for="autoDownloadEnabled">
+                                                <strong>Enable Auto Download</strong>
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label for="autoDownloadInterval" class="form-label">Check Interval</label>
+                                        <select class="form-select" id="autoDownloadInterval">
+                                            <option value="15" {{ 'selected' if config.get('auto-download', {}).get('interval', 60) == 15 else '' }}>Every 15 minutes</option>
+                                            <option value="30" {{ 'selected' if config.get('auto-download', {}).get('interval', 60) == 30 else '' }}>Every 30 minutes</option>
+                                            <option value="60" {{ 'selected' if config.get('auto-download', {}).get('interval', 60) == 60 else '' }}>Every hour</option>
+                                            <option value="120" {{ 'selected' if config.get('auto-download', {}).get('interval', 60) == 120 else '' }}>Every 2 hours</option>
+                                            <option value="360" {{ 'selected' if config.get('auto-download', {}).get('interval', 60) == 360 else '' }}>Every 6 hours</option>
+                                            <option value="720" {{ 'selected' if config.get('auto-download', {}).get('interval', 60) == 720 else '' }}>Every 12 hours</option>
+                                            <option value="1440" {{ 'selected' if config.get('auto-download', {}).get('interval', 60) == 1440 else '' }}>Once a day</option>
+                                        </select>
+                                    </div>
+                                </div>
+
+                            <hr>
+
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Add Playlist to Auto Download</label>
+                                    <div class="input-group">
+                                        <select class="form-select" id="addPlaylistSelect">
+                                            <option value="">Loading playlists...</option>
+                                        </select>
+                                        <button class="btn btn-primary" type="button" id="addPlaylistBtn">
+                                            <i class="bi bi-plus-lg"></i> Add
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Auto Download Status</label>
+                                    <div id="autoDownloadStatus" class="text-muted">
+                                        <i class="bi bi-clock"></i> <span id="nextCheckTime">Not running</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="mt-3">
+                                <label class="form-label">Monitored Playlists</label>
+                                <div id="autoDownloadPlaylists" class="list-group" style="max-height: 300px; overflow-y: auto;">
+                                    <div class="list-group-item bg-dark text-muted text-center">
+                                        <i class="bi bi-hourglass-split"></i> Loading...
+                                    </div>
+                                </div>
+                            </div>
+                            </div><!-- end autoDownloadContent -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Stats Section -->
+            <div class="row mb-4">
+                <div class="col-12">
+                    <div class="card bg-dark border-secondary">
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="bi bi-bar-chart"></i> Statistics</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="row text-center">
+                                <div class="col-3">
+                                    <small class="text-muted">Wrapper Status</small>
+                                    <div class="h5 mb-0" id="stat-wrapper">
+                                        <span class="spinner-border spinner-border-sm"></span>
+                                    </div>
+                                </div>
+                                <div class="col-3">
+                                    <small class="text-muted">Queue</small>
+                                    <div class="h5 mb-0" id="stat-queue">0</div>
+                                </div>
+                                <div class="col-3">
+                                    <small class="text-muted">Completed</small>
+                                    <div class="h5 mb-0 text-success" id="stat-completed">0</div>
+                                </div>
+                                <div class="col-3">
+                                    <small class="text-muted">Failed</small>
+                                    <div class="h5 mb-0 text-danger" id="stat-failed">0</div>
+                                </div>
+                            </div>
+                            <hr class="my-3">
+                            <div class="row text-center">
+                                <div class="col-4">
+                                    <small class="text-muted">Downloaded Files</small>
+                                    <div class="h5 mb-0" id="stat-files">0</div>
+                                </div>
+                                <div class="col-4">
+                                    <small class="text-muted">Total Size</small>
+                                    <div class="h5 mb-0" id="stat-size">0 MB</div>
+                                </div>
+                                <div class="col-4">
+                                    <small class="text-muted">Monitored Playlists</small>
+                                    <div class="h5 mb-0" id="stat-playlists">0</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Lyrics Settings -->
+            <div class="row mb-4">
+                <div class="col-12">
+                    <div class="card bg-dark border-secondary">
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="bi bi-chat-quote"></i> Lyrics Settings</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="form-check form-switch mb-3">
+                                        <input class="form-check-input" type="checkbox" id="lyricsEmbedInFile"
+                                               {{ 'checked' if config.get('lyrics', {}).get('embed-in-file', True) else '' }}>
+                                        <label class="form-check-label" for="lyricsEmbedInFile">
+                                            <strong>Embed Lyrics in Audio File</strong>
+                                        </label>
+                                        <div class="form-text">Embed synced lyrics directly into the audio file metadata</div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-check form-switch mb-3">
+                                        <input class="form-check-input" type="checkbox" id="lyricsSaveLrcFile"
+                                               {{ 'checked' if config.get('lyrics', {}).get('save-lrc-file', True) else '' }}>
+                                        <label class="form-check-label" for="lyricsSaveLrcFile">
+                                            <strong>Save Separate .lrc File</strong>
+                                        </label>
+                                        <div class="form-text">Also save lyrics as a separate .lrc file alongside the audio</div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Auto Lyrics Generation -->
+                            <hr class="border-secondary my-3">
+                            <h6 class="text-muted mb-3"><i class="bi bi-magic"></i> AI Lyrics Generation</h6>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="form-check form-switch mb-3">
+                                        <input class="form-check-input" type="checkbox" id="autoLyricsEnabled"
+                                               {{ 'checked' if config.get('lyrics', {}).get('auto-generate', False) else '' }}>
+                                        <label class="form-check-label" for="autoLyricsEnabled">
+                                            <strong>Auto-Generate Missing Lyrics</strong>
+                                        </label>
+                                        <div class="form-text">Use AI (Whisper) to transcribe and generate lyrics for songs without them</div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="whisperModel" class="form-label">Whisper Model</label>
+                                    <select class="form-select" id="whisperModel">
+                                        <option value="tiny" {{ 'selected' if config.get('lyrics', {}).get('whisper-model', 'base') == 'tiny' else '' }}>Tiny (fastest, least accurate)</option>
+                                        <option value="base" {{ 'selected' if config.get('lyrics', {}).get('whisper-model', 'base') == 'base' else '' }}>Base (balanced)</option>
+                                        <option value="small" {{ 'selected' if config.get('lyrics', {}).get('whisper-model', 'base') == 'small' else '' }}>Small (better accuracy)</option>
+                                        <option value="medium" {{ 'selected' if config.get('lyrics', {}).get('whisper-model', 'base') == 'medium' else '' }}>Medium (high accuracy)</option>
+                                        <option value="large" {{ 'selected' if config.get('lyrics', {}).get('whisper-model', 'base') == 'large' else '' }}>Large (best, slowest)</option>
+                                    </select>
+                                    <div class="form-text">Larger models are more accurate but require more RAM and time</div>
+                                </div>
+                            </div>
+                            <div class="alert alert-info mt-3 mb-0" id="whisperInfo">
+                                <i class="bi bi-info-circle"></i>
+                                <strong>Note:</strong> First use will download the Whisper model (~150MB-3GB depending on size). 
+                                Requires <code>openai-whisper</code> package. GPU (CUDA) recommended for faster processing.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Duplicate Detection -->
+            <div class="row mb-4">
+                <div class="col-12">
+                    <div class="card bg-dark border-secondary">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0"><i class="bi bi-files"></i> Duplicate Detection</h5>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="scanDuplicates()">
+                                <i class="bi bi-search"></i> Scan for Duplicates
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="duplicateDetection"
+                                       {{ 'checked' if config.get('duplicate-detection', True) else '' }}>
+                                <label class="form-check-label" for="duplicateDetection">
+                                    <strong>Warn Before Downloading Duplicates</strong>
+                                </label>
+                                <div class="form-text">Check if a song might already exist before downloading</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Blacklist -->
+            <div class="row mb-4">
+                <div class="col-12">
+                    <div class="card bg-dark border-secondary">
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="bi bi-slash-circle"></i> Blacklist</h5>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted">Skip certain artists or albums during auto-download.</p>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <h6>Blacklisted Artists</h6>
+                                    <div id="blacklistArtists" class="list-group mb-2"></div>
+                                </div>
+                                <div class="col-md-6">
+                                    <h6>Blacklisted Albums</h6>
+                                    <div id="blacklistAlbums" class="list-group mb-2"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Followed Artists -->
+            <div class="row mb-4">
+                <div class="col-12">
+                    <div class="card bg-dark border-secondary">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0"><i class="bi bi-person-heart"></i> Followed Artists</h5>
+                            <button type="button" class="btn btn-sm btn-outline-danger" onclick="checkNewReleases()">
+                                <i class="bi bi-stars"></i> Check New Releases
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted">Artists you follow will be checked for new releases.</p>
+                            <div id="followedArtistsList" class="row g-3"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Backup/Restore -->
+            <div class="row mb-4">
+                <div class="col-12">
+                    <div class="card bg-dark border-secondary">
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="bi bi-cloud-arrow-up"></i> Backup & Restore</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <h6>Export Settings</h6>
+                                    <p class="text-muted small">Download all settings, favorites, and followed artists.</p>
+                                    <a href="/api/settings/export" class="btn btn-outline-primary">
+                                        <i class="bi bi-download"></i> Export Backup
+                                    </a>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <h6>Import Settings</h6>
+                                    <p class="text-muted small">Restore settings from a backup file.</p>
+                                    <input type="file" class="form-control mb-2" id="importFile" accept=".json">
+                                    <button type="button" class="btn btn-outline-success" onclick="importSettings()">
+                                        <i class="bi bi-upload"></i> Import Backup
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="row">
+                <div class="col-12">
+                    <button type="submit" class="btn btn-primary btn-lg w-100">
+                        <i class="bi bi-save"></i> Save Settings
+                    </button>
+                </div>
+            </div>
+        </form>
+
+        <!-- Updates -->
+        <div class="row mt-4 mb-4">
+            <div class="col-12">
+                <div class="card bg-dark border-info">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="bi bi-cloud-download"></i> Updates</h5>
+                    </div>
+                    <div class="card-body">
+                        <!-- Update reminder banner (hidden by default) -->
+                        <div class="alert alert-warning d-none" id="updateReminderBanner">
+                            <i class="bi bi-exclamation-triangle"></i>
+                            It's been a while since you checked for updates.
+                            <button type="button" class="btn btn-sm btn-warning ms-2" onclick="checkForUpdates()">
+                                Check Now
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary ms-1" onclick="dismissUpdateReminder()">
+                                Dismiss
+                            </button>
+                        </div>
+
+                        <div class="mb-3 d-flex align-items-center gap-3 flex-wrap">
+                            <div>
+                                <span class="text-muted">Current version:</span>
+                                <strong id="currentVersionLabel">...</strong>
+                            </div>
+                            <span class="text-muted small" id="lastCheckLabel"></span>
+                        </div>
+
+                        <div class="d-flex align-items-center gap-2 mb-3">
+                            <button type="button" class="btn btn-outline-info" id="checkUpdatesBtn" onclick="checkForUpdates()">
+                                <i class="bi bi-arrow-repeat"></i> Check for Updates
+                            </button>
+                        </div>
+
+                        <!-- Update result (hidden until check) -->
+                        <div id="updateResult" class="d-none">
+                            <div id="updateAvailableInfo" class="d-none">
+                                <div class="alert alert-info">
+                                    <i class="bi bi-arrow-up-circle"></i>
+                                    <strong id="updateSummary"></strong>
+                                </div>
+                                <div class="mb-2 small" id="releaseNotesContainer" style="max-height: 200px; overflow-y: auto;"></div>
+                                <button type="button" class="btn btn-success" id="applyUpdateBtn" onclick="applyUpdate()">
+                                    <i class="bi bi-download"></i> Download &amp; Install Update
+                                </button>
+                            </div>
+                            <div id="noUpdateInfo" class="d-none">
+                                <div class="alert alert-success mb-0">
+                                    <i class="bi bi-check-circle"></i> You're on the latest version.
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Progress bar (hidden until downloading) -->
+                        <div id="updateProgressSection" class="d-none mt-3">
+                            <div class="d-flex align-items-center gap-2">
+                                <div class="spinner-border spinner-border-sm text-info" role="status"></div>
+                                <span id="updateProgressLabel">Downloading update...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Shutdown -->
+        <div class="row mb-4">
+            <div class="col-12">
+                <div class="card bg-dark border-danger">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="bi bi-power"></i> Shutdown</h5>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted">Stop the Apple Music Downloader server. You will need to restart it manually.</p>
+                        <button type="button" class="btn btn-danger" id="shutdownBtn" onclick="shutdownProgram()">
+                            <i class="bi bi-power"></i> Shutdown Program
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Folder Browser Modal -->
+    <div class="modal fade" id="folderBrowserModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content bg-dark">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title"><i class="bi bi-folder2-open"></i> Select Folder</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="bi bi-folder"></i></span>
+                            <input type="text" class="form-control" id="currentPathInput" placeholder="Current path">
+                            <button type="button" class="btn btn-outline-primary" id="openExplorerBtn" title="Open Windows Folder Picker">
+                                <i class="bi bi-folder2-open"></i> Browse
+                            </button>
+                        </div>
+                    </div>
+                    <div class="mb-3" id="drivesContainer" style="display: none;">
+                        <label class="form-label small text-muted">Drives</label>
+                        <div class="d-flex flex-wrap gap-2" id="drivesList"></div>
+                    </div>
+                    <div class="border border-secondary rounded" style="max-height: 400px; overflow-y: auto;">
+                        <div class="list-group list-group-flush" id="folderList">
+                            <div class="list-group-item bg-dark text-center text-muted">
+                                <i class="bi bi-hourglass-split"></i> Loading...
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="selectFolderBtn">
+                        <i class="bi bi-check-lg"></i> Select This Folder
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3">
+        <div id="toast" class="toast" role="alert">
+            <div class="toast-header">
+                <i class="bi bi-info-circle me-2"></i>
+                <strong class="me-auto" id="toastTitle">Notification</strong>
+                <button type="button" class="btn-close" data-bs-dismiss="toast"></button>
+            </div>
+            <div class="toast-body" id="toastBody"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="{{ url_for('static', filename='js/settings.js') }}"></script>
+    <script>
+        // Theme and navigation functions for settings page
+        function toggleTheme() {
+            const html = document.documentElement;
+            const currentTheme = html.getAttribute('data-bs-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            html.setAttribute('data-bs-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            updateThemeIcon();
+        }
+        
+        function updateThemeIcon() {
+            const theme = document.documentElement.getAttribute('data-bs-theme');
+            const icon = document.getElementById('themeIcon');
+            if (icon) {
+                icon.className = theme === 'dark' ? 'bi bi-moon-stars' : 'bi bi-sun';
+            }
+        }
+        
+        function toggleNotifications() {
+            const enabled = localStorage.getItem('notifications') !== 'false';
+            localStorage.setItem('notifications', !enabled);
+            updateNotificationIcon();
+        }
+        
+        function updateNotificationIcon() {
+            const enabled = localStorage.getItem('notifications') !== 'false';
+            const icon = document.getElementById('notificationIcon');
+            if (icon) {
+                icon.className = enabled ? 'bi bi-bell' : 'bi bi-bell-slash';
+            }
+        }
+        
+        function showFavorites() {
+            window.location.href = '/?view=favorites';
+        }
+        
+        function showHistory() {
+            window.location.href = '/?view=history';
+        }
+        
+        // Initialize on load
+        document.addEventListener('DOMContentLoaded', function() {
+            const savedTheme = localStorage.getItem('theme') || 'dark';
+            document.documentElement.setAttribute('data-bs-theme', savedTheme);
+            updateThemeIcon();
+            updateNotificationIcon();
+        });
+    </script>
+</body>
+</html>
