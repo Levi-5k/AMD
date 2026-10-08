@@ -44,7 +44,7 @@ REM Check if wrapper is running
 docker ps --filter "name=amd-wrapper" --format "{{.Names}}" | findstr /i "amd-wrapper" >nul
 if errorlevel 1 (
     echo Starting wrapper service...
-    docker run -d --name amd-wrapper --restart unless-stopped ^
+    docker run -d --name amd-wrapper --restart no ^
         -v "%WRAPPER_DATA%:/app/rootfs/data" ^
         -p 10020:10020 -p 20020:20020 -p 30020:30020 ^
         -e args="-H 0.0.0.0" ^
@@ -53,7 +53,7 @@ if errorlevel 1 (
     if errorlevel 1 (
         echo Removing old wrapper container...
         docker rm -f amd-wrapper 2>nul
-        docker run -d --name amd-wrapper --restart unless-stopped ^
+        docker run -d --name amd-wrapper --restart no ^
             -v "%WRAPPER_DATA%:/app/rootfs/data" ^
             -p 10020:10020 -p 20020:20020 -p 30020:30020 ^
             -e args="-H 0.0.0.0" ^

@@ -18,6 +18,123 @@ async function shutdownProgram() {
     }
 }
 
+let mediaTokenModal = null;
+let mediaTokenPollTimer = null;
+
+function openMediaTokenSetup() {
+    document.getElementById('mediaTokenCredentialsStep').classList.remove('d-none');
+    document.getElementById('mediaToken2faStep').classList.add('d-none');
+    document.getElementById('mediaTokenPassword').value = '';
+    document.getElementById('mediaToken2faCode').value = '';
+    document.getElementById('mediaTokenLoginStatus').classList.add('d-none');
+    mediaTokenModal = mediaTokenModal || new bootstrap.Modal(document.getElementById('mediaTokenModal'));
+    mediaTokenModal.show();
+}
+
+function setMediaTokenStatus(message, type = 'secondary') {
+    const status = document.getElementById('mediaTokenLoginStatus');
+    status.className = `alert alert-${type} mt-3 mb-0`;
+    status.textContent = message;
+}
+
+async function startMediaTokenLogin() {
+    const email = document.getElementById('mediaTokenEmail').value.trim();
+    const passwordInput = document.getElementById('mediaTokenPassword');
+    const password = passwordInput.value;
+    if (!email || !password) {
+        setMediaTokenStatus('Enter your Apple ID and password.', 'warning');
+        return;
+    }
+
+    const button = document.getElementById('mediaTokenLoginBtn');
+    button.disabled = true;
+    button.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Signing in...';
+    setMediaTokenStatus('Connecting to Apple Music...');
+
+    try {
+        const response = await fetch('/api/wrapper-setup/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password })
+        });
+        passwordInput.value = '';
+        const data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.error || 'Sign in failed.');
+        handleMediaTokenLoginState(data);
+    } catch (error) {
+        passwordInput.value = '';
+        setMediaTokenStatus(error.message, 'danger');
+        button.disabled = false;
+        button.innerHTML = '<i class="bi bi-box-arrow-in-right"></i> Continue';
+    }
+}
+
+function handleMediaTokenLoginState(data) {
+    if (data.state === 'waiting_2fa') {
+        document.getElementById('mediaTokenCredentialsStep').classList.add('d-none');
+        document.getElementById('mediaToken2faStep').classList.remove('d-none');
+        setMediaTokenStatus(data.message || 'Enter the verification code sent to your device.', 'info');
+        document.getElementById('mediaToken2faCode').focus();
+    } else if (data.state === 'success') {
+        completeMediaTokenLogin(data.message);
+    } else if (data.state === 'error') {
+        setMediaTokenStatus(data.message || 'Sign in failed.', 'danger');
+        const button = document.getElementById('mediaTokenLoginBtn');
+        button.disabled = false;
+        button.innerHTML = '<i class="bi bi-box-arrow-in-right"></i> Continue';
+    } else {
+        setMediaTokenStatus('Waiting for Apple Music...');
+        clearTimeout(mediaTokenPollTimer);
+        mediaTokenPollTimer = setTimeout(pollMediaTokenLogin, 1000);
+    }
+}
+
+async function pollMediaTokenLogin() {
+    try {
+        const response = await fetch('/api/wrapper-setup/status');
+        handleMediaTokenLoginState(await response.json());
+    } catch (error) {
+        setMediaTokenStatus('Lost connection while signing in.', 'danger');
+    }
+}
+
+async function submitMediaToken2FA() {
+    const code = document.getElementById('mediaToken2faCode').value.trim();
+    if (!/^\d{6}$/.test(code)) {
+        setMediaTokenStatus('Enter the six-digit verification code.', 'warning');
+        return;
+    }
+
+    const button = document.getElementById('mediaToken2faBtn');
+    button.disabled = true;
+    button.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Verifying...';
+    try {
+        const response = await fetch('/api/wrapper-setup/2fa', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code })
+        });
+        document.getElementById('mediaToken2faCode').value = '';
+        const data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.error || 'Verification failed.');
+        completeMediaTokenLogin(data.message);
+    } catch (error) {
+        setMediaTokenStatus(error.message, 'danger');
+        button.disabled = false;
+        button.innerHTML = '<i class="bi bi-check-lg"></i> Verify';
+    }
+}
+
+async function completeMediaTokenLogin(message) {
+    clearTimeout(mediaTokenPollTimer);
+    setMediaTokenStatus(message || 'Media token saved.', 'success');
+    const config = await fetch('/api/config').then(response => response.json());
+    document.getElementById('mediaUserToken').value = config['media-user-token'] || '';
+    checkAuthAndLoadAutoDownload();
+    showToast('Authentication', 'Media token saved successfully.', 'success');
+    setTimeout(() => mediaTokenModal?.hide(), 800);
+}
+
 // Auto-download playlists data
 let autoDownloadPlaylists = [];
 let availablePlaylists = [];

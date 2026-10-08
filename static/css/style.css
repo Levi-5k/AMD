@@ -626,6 +626,137 @@ body {
     color: rgba(255, 255, 255, 0.5);
 }
 
+/* Recently played rail */
+.recently-played-section {
+    min-width: 0;
+}
+
+.recently-played-rail {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(150px, 180px);
+    gap: 1rem;
+    min-height: 220px;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    padding: 0.15rem 0 0.75rem;
+    scroll-snap-type: inline proximity;
+    scrollbar-width: thin;
+}
+
+.recently-played-item {
+    min-width: 0;
+    cursor: pointer;
+    scroll-snap-align: start;
+}
+
+.recently-played-item:focus-visible {
+    outline: 2px solid var(--apple-music-pink);
+    outline-offset: 4px;
+    border-radius: 8px;
+}
+
+.recently-played-artwork {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 1;
+    overflow: hidden;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.06);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.24);
+}
+
+.recently-played-artwork img,
+.recently-played-placeholder {
+    width: 100%;
+    height: 100%;
+}
+
+.recently-played-artwork img {
+    display: block;
+    object-fit: cover;
+    transition: transform 0.25s ease;
+}
+
+.recently-played-item:hover .recently-played-artwork img {
+    transform: scale(1.025);
+}
+
+.recently-played-placeholder {
+    display: grid;
+    place-items: center;
+    color: rgba(255, 255, 255, 0.35);
+    font-size: 2.5rem;
+}
+
+.recently-played-download {
+    position: absolute;
+    right: 0.6rem;
+    bottom: 0.6rem;
+    display: grid;
+    width: 2.35rem;
+    height: 2.35rem;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    color: #fff;
+    background: var(--apple-music-pink);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity 0.2s ease, transform 0.2s ease, background-color 0.2s ease;
+}
+
+.recently-played-item:hover .recently-played-download,
+.recently-played-download:focus-visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.recently-played-download:hover {
+    background: #d91f3b;
+}
+
+.recently-played-name,
+.recently-played-artist {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.recently-played-name {
+    margin-top: 0.65rem;
+    font-size: 0.92rem;
+    font-weight: 600;
+}
+
+.recently-played-artist {
+    margin-top: 0.15rem;
+    color: var(--bs-secondary-color);
+    font-size: 0.82rem;
+}
+
+.recently-played-state {
+    display: flex;
+    align-items: center;
+    min-width: min(80vw, 520px);
+    min-height: 180px;
+}
+
+@media (hover: none) {
+    .recently-played-download {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+@media (max-width: 575.98px) {
+    .recently-played-rail {
+        grid-auto-columns: minmax(138px, 42vw);
+    }
+}
+
 /* Collapse icon animation */
 .collapse-icon {
     transition: transform 0.3s ease;

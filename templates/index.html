@@ -239,7 +239,7 @@
                                             <button type="button" class="btn btn-sm btn-outline-secondary" id="backFromAlbumBtn">
                                                 <i class="bi bi-arrow-left"></i>
                                             </button>
-                                            <span class="text-muted">Back to search</span>
+                                            <span class="text-muted" id="albumPreviewBackLabel">Back to search</span>
                                         </div>
                                     </div>
                                     <div class="card-body">
@@ -295,6 +295,22 @@
                 </div>
             </div>
         </div>
+
+        <!-- Recently Played -->
+        <section class="recently-played-section mb-4" aria-labelledby="recentlyPlayedTitle">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h4 class="mb-0" id="recentlyPlayedTitle">Recently Played</h4>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="refreshRecentlyPlayedBtn" title="Refresh recently played" aria-label="Refresh recently played">
+                    <i class="bi bi-arrow-clockwise"></i>
+                </button>
+            </div>
+            <div class="recently-played-rail" id="recentlyPlayedRail" aria-live="polite">
+                <div class="recently-played-state text-muted">
+                    <span class="spinner-border spinner-border-sm me-2"></span>
+                    Loading recently played...
+                </div>
+            </div>
+        </section>
 
         <!-- Downloads & Files Section (Combined, Collapsible) -->
         <div class="row">

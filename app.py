@@ -18,6 +18,8 @@ import time
 import logging
 import base64
 import shutil
+import hashlib
+import tempfile
 from io import BytesIO
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, send_from_directory, Response
@@ -136,7 +138,7 @@ def install_package_pip(package):
 
 # Import mutagen for audio file metadata (artwork extraction)
 try:
-    from mutagen.mp4 import MP4
+    from mutagen.mp4 import MP4, MP4Cover
     from mutagen.flac import FLAC
     from mutagen.mp3 import MP3
     from mutagen.id3 import ID3
@@ -188,47 +190,39 @@ def get_apple_music_token():
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
         
-        # Try getting token from the web player's JavaScript
+        # Apple embeds the developer token in a hashed web-player JavaScript bundle.
         response = requests.get('https://music.apple.com/us/browse', headers=headers, timeout=10)
         
         if response.status_code == 200:
-            # Look for the token in the page content
-            # The token is usually in a script tag or data attribute
+            import base64
             import re
-            
-            # Try multiple patterns to find the token
-            patterns = [
-                r'eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IldlYlBsYXlLaWQifQ[^"\']+',
-                r'"token":"(eyJ[^"]+)"',
-                r"'token':'(eyJ[^']+)'",
-            ]
-            
-            for pattern in patterns:
-                match = re.search(pattern, response.text)
-                if match:
-                    token = match.group(0) if '(' not in pattern else match.group(1)
-                    _apple_music_token = token
-                    _apple_music_token_expires = time.time() + 3500  # Cache for ~1 hour
-                    logger.info(f"Obtained Apple Music token ({len(token)} chars)")
-                    return token
-        
-        # If we couldn't extract from page, try the API endpoint directly
-        # Apple has a public endpoint for getting tokens
-        api_response = requests.get(
-            'https://beta.music.apple.com/',
-            headers=headers,
-            timeout=10
-        )
-        
-        if api_response.status_code == 200:
-            for pattern in patterns:
-                match = re.search(pattern, api_response.text)
-                if match:
-                    token = match.group(0) if '(' not in pattern else match.group(1)
-                    _apple_music_token = token
-                    _apple_music_token_expires = time.time() + 3500
-                    logger.info(f"Obtained Apple Music token from beta ({len(token)} chars)")
-                    return token
+
+            script_paths = re.findall(r'<script[^>]+src=["\']([^"\']+)', response.text)
+            script_paths = [path for path in script_paths if '/assets/index' in path]
+
+            for script_path in script_paths:
+                script_url = requests.compat.urljoin(response.url, script_path)
+                script_response = requests.get(script_url, headers=headers, timeout=30)
+                if script_response.status_code != 200:
+                    continue
+
+                candidates = re.findall(
+                    r'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+',
+                    script_response.text
+                )
+                for token in candidates:
+                    try:
+                        encoded_header = token.split('.', 1)[0]
+                        encoded_header += '=' * (-len(encoded_header) % 4)
+                        token_header = json.loads(base64.urlsafe_b64decode(encoded_header))
+                    except (ValueError, json.JSONDecodeError):
+                        continue
+
+                    if token_header.get('kid') == 'WebPlayKid':
+                        _apple_music_token = token
+                        _apple_music_token_expires = time.time() + 3500
+                        logger.info(f"Obtained Apple Music token ({len(token)} chars)")
+                        return token
         
         logger.warning("Could not find token in Apple Music pages")
         return None
@@ -293,6 +287,8 @@ _init_downloads_dir()
 download_queue = queue.Queue()
 downloads = {}  # Track all downloads by ID
 download_lock = threading.Lock()
+active_download_ids = {}  # Request key -> active download ID
+download_request_keys = {}  # Download ID -> request key
 
 # Default configuration
 DEFAULT_CONFIG = {
@@ -363,7 +359,7 @@ def save_config(config):
 
 
 def embed_artwork_in_m4a(m4a_path, artwork_url):
-    """Download artwork and embed it into an m4a file using ffmpeg in Docker"""
+    """Download artwork and embed it into an m4a file."""
     try:
         if not artwork_url or not os.path.exists(m4a_path):
             return False
@@ -373,59 +369,30 @@ def embed_artwork_in_m4a(m4a_path, artwork_url):
         if artwork_response.status_code != 200:
             logger.error(f"Failed to download artwork: {artwork_response.status_code}")
             return False
-        
-        # Save artwork temporarily
-        temp_artwork = os.path.join(BASE_DIR, 'temp_artwork.jpg')
-        with open(temp_artwork, 'wb') as f:
-            f.write(artwork_response.content)
-        
-        # Create temp output file
-        temp_output = m4a_path + '.temp.m4a'
-        
-        # Use ffmpeg to embed artwork
-        # Convert paths for Docker
-        m4a_docker = m4a_path.replace(DOWNLOADS_DIR, '/downloads').replace('\\', '/')
-        temp_output_docker = temp_output.replace(DOWNLOADS_DIR, '/downloads').replace('\\', '/')
-        artwork_docker = '/app/temp_artwork.jpg'
-        
-        cmd = [
-            'docker', 'run', '--rm',
-            '-v', f'{DOWNLOADS_DIR.replace(chr(92), "/")}:/downloads',
-            '-v', f'{temp_artwork}:/app/temp_artwork.jpg',
-            'linuxserver/ffmpeg',
-            '-i', m4a_docker,
-            '-i', artwork_docker,
-            '-map', '0:a', '-map', '1:0',
-            '-c', 'copy',
-            '-disposition:v:0', 'attached_pic',
-            '-metadata:s:v', 'title=Album cover',
-            '-metadata:s:v', 'comment=Cover (front)',
-            temp_output_docker
-        ]
-        
-        result = run_subprocess(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
-        
-        # Clean up temp artwork
-        if os.path.exists(temp_artwork):
-            os.remove(temp_artwork)
-        
-        if result.returncode == 0 and os.path.exists(temp_output):
-            # Replace original with new file
-            os.replace(temp_output, m4a_path)
-            logger.info(f"Embedded artwork in: {os.path.basename(m4a_path)}")
-            return True
+
+        artwork_data = artwork_response.content
+        if artwork_data.startswith(b'\x89PNG\r\n\x1a\n'):
+            image_format = MP4Cover.FORMAT_PNG
+        elif artwork_data.startswith(b'\xff\xd8\xff'):
+            image_format = MP4Cover.FORMAT_JPEG
         else:
-            logger.error(f"ffmpeg failed: {result.stderr}")
-            if os.path.exists(temp_output):
-                os.remove(temp_output)
+            logger.error("Downloaded artwork is not a supported JPEG or PNG image")
             return False
+
+        audio = MP4(m4a_path)
+        if audio.tags is None:
+            audio.add_tags()
+        audio.tags['covr'] = [MP4Cover(artwork_data, imageformat=image_format)]
+        audio.save()
+        logger.info(f"Embedded artwork in: {os.path.basename(m4a_path)}")
+        return True
             
     except Exception as e:
         logger.error(f"Error embedding artwork: {e}")
         return False
 
 
-def embed_artwork_for_file(m4a_path):
+def embed_artwork_for_file(m4a_path, fallback_artwork_url=None, fallback_song_id=None):
     """Embed artwork for an m4a file by reading its metadata and fetching artwork from Apple Music API"""
     try:
         if not os.path.exists(m4a_path) or not MUTAGEN_AVAILABLE:
@@ -438,15 +405,21 @@ def embed_artwork_for_file(m4a_path):
             return True
         
         # Get song ID and album ID from metadata
-        song_id = audio.get('atID', [None])[0] if 'atID' in audio else None
+        song_id = audio.get('atID', [None])[0] if 'atID' in audio else fallback_song_id
         album_id = audio.get('plID', [None])[0] if 'plID' in audio else None
         
         if not song_id and not album_id:
+            if fallback_artwork_url:
+                logger.info(f"Embedding supplied artwork for: {os.path.basename(m4a_path)}")
+                return embed_artwork_in_m4a(m4a_path, fallback_artwork_url)
             logger.warning(f"No song/album ID in metadata for: {os.path.basename(m4a_path)}")
             return False
         
         logger.info(f"Embedding artwork for: {os.path.basename(m4a_path)} (song ID: {song_id}, album ID: {album_id})")
-        return embed_artwork_for_song(song_id, m4a_path, album_id=album_id)
+        embedded = embed_artwork_for_song(song_id, m4a_path, album_id=album_id)
+        if not embedded and fallback_artwork_url:
+            return embed_artwork_in_m4a(m4a_path, fallback_artwork_url)
+        return embedded
         
     except Exception as e:
         logger.error(f"Error embedding artwork for file {m4a_path}: {e}")
@@ -550,6 +523,42 @@ def parse_apple_music_url(url):
     return None
 
 
+ACTIVE_DOWNLOAD_STATUSES = {'queued', 'downloading', 'retrying'}
+
+
+def get_download_request_key(url):
+    """Return a stable key for duplicate detection across Apple Music URL forms."""
+    url_info = parse_apple_music_url(url)
+    if url_info:
+        return f"{url_info['type']}:{url_info['id']}"
+    return url.strip().rstrip('/').lower()
+
+
+def register_download(download):
+    """Atomically register a download unless the same item is already active."""
+    request_key = get_download_request_key(download['url'])
+    with download_lock:
+        existing_id = active_download_ids.get(request_key)
+        if existing_id:
+            existing = downloads.get(existing_id)
+            if existing and existing.get('status') in ACTIVE_DOWNLOAD_STATUSES:
+                return existing_id, False
+            active_download_ids.pop(request_key, None)
+            download_request_keys.pop(existing_id, None)
+
+        downloads[download['id']] = download
+        active_download_ids[request_key] = download['id']
+        download_request_keys[download['id']] = request_key
+    return download['id'], True
+
+
+def release_download_registration_locked(download_id):
+    """Release an active request key while download_lock is held."""
+    request_key = download_request_keys.pop(download_id, None)
+    if request_key and active_download_ids.get(request_key) == download_id:
+        active_download_ids.pop(request_key, None)
+
+
 def move_files_to_playlist_folder(search_dir, playlist_name, recent_time):
     """Move recently downloaded files to a playlist folder"""
     config = load_config()
@@ -615,12 +624,15 @@ def get_download_cmd(url, options):
         downloads_vol = DOWNLOADS_DIR.replace('\\', '/')
         config_vol = CONFIG_FILE.replace('\\', '/')
         
-        cmd = [
-            'docker', 'run', '--rm', '-i', '--network', 'host',
+        cmd = ['docker', 'run', '--rm', '-i']
+        if options.get('_container_name'):
+            cmd.extend(['--name', options['_container_name']])
+        cmd.extend([
+            '--network', 'host',
             '-v', f'{downloads_vol}:/downloads',
             '-v', f'{config_vol}:/app/config.yaml',
             'ghcr.io/zhaarey/apple-music-downloader'
-        ]
+        ])
     else:
         # Use local Go installation
         if downloader_path and os.path.isfile(os.path.join(downloader_path, 'main.go')):
@@ -668,6 +680,27 @@ def get_download_cmd(url, options):
     return cmd
 
 
+def terminate_download_process(process, container_name=None):
+    """Stop a downloader process and its specific Docker container."""
+    if container_name:
+        try:
+            run_subprocess(
+                ['docker', 'rm', '-f', container_name],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+        except Exception as e:
+            logger.warning(f"Failed to remove download container {container_name}: {e}")
+
+    if process and process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
+
 def restart_wrapper_container():
     """Restart the AMD wrapper container to fix connection issues"""
     logger.info("Attempting to restart wrapper container...")
@@ -698,7 +731,7 @@ def restart_wrapper_container():
             result = run_subprocess([
                 'docker', 'run', '-d',
                 '--name', 'amd-wrapper',
-                '--restart', 'unless-stopped',
+                '--restart', 'no',
                 '-v', f'{wrapper_data}:/app/rootfs/data',
                 '-p', '10020:10020',
                 '-p', '20020:20020', 
@@ -723,6 +756,39 @@ def restart_wrapper_container():
         return False
 
 
+def wrapper_is_ready():
+    """Check the wrapper ports required for account data and decryption."""
+    import socket
+
+    for port in (10020, 30020):
+        try:
+            with socket.create_connection(('127.0.0.1', port), timeout=2):
+                pass
+        except OSError:
+            return False
+    return True
+
+
+def ensure_wrapper_ready_for_download():
+    """Start the wrapper on demand and wait until its services are listening."""
+    if wrapper_is_ready():
+        return True
+
+    logger.info("Wrapper is not ready; starting it for the queued download")
+    if not restart_wrapper_container():
+        return False
+
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        if wrapper_is_ready():
+            logger.info("Wrapper is ready for download")
+            return True
+        time.sleep(1)
+
+    logger.error("Wrapper did not become ready before the download timeout")
+    return False
+
+
 def download_worker():
     """Background worker to process download queue"""
     while True:
@@ -736,10 +802,22 @@ def download_worker():
                 downloads[download_id]['started_at'] = datetime.now().isoformat()
             
             socketio.emit('download_update', downloads[download_id], namespace='/')
-            
+
+            process = None
+            container_name = None
             try:
-                cmd = get_download_cmd(url, options)
+                if not ensure_wrapper_ready_for_download():
+                    raise RuntimeError(
+                        "Wrapper failed to start. Check Docker and the wrapper service, then try again."
+                    )
+
+                worker_options = options.copy()
+                safe_download_id = re.sub(r'[^a-zA-Z0-9_.-]', '-', download_id)
+                container_name = f"amd-download-{safe_download_id}-{options.get('_retry_count', 0)}"
+                worker_options['_container_name'] = container_name
+                cmd = get_download_cmd(url, worker_options)
                 logger.info(f"Command: {' '.join(cmd)}")
+                start_time = time.time()
                 
                 # Run the download command
                 process = popen_subprocess(
@@ -754,14 +832,18 @@ def download_worker():
                     bufsize=1
                 )
                 
-                # Auto-respond with 'all' for track selection if needed
+                # Answer an optional selection prompt, then close stdin so Docker
+                # cannot wait indefinitely for more interactive input.
                 if process.stdin:
                     try:
-                        process.stdin.write('all\n')
-                        process.stdin.flush()
-                        process.stdin.close()
+                        if options.get('select'):
+                            selected_tracks = options.get('selected_tracks') or []
+                            process.stdin.write(','.join(str(track) for track in selected_tracks) + '\n')
+                            process.stdin.flush()
                     except Exception:
                         pass  # Stdin may already be closed
+                    finally:
+                        process.stdin.close()
                 
                 output_lines = []
                 completed_count = 0
@@ -773,8 +855,8 @@ def download_worker():
                 wrapper_connection_error = False  # Track wrapper TCP errors (can retry)
                 last_output_time = time.time()
                 idle_timeout = 30  # seconds to wait after last output before assuming hung
+                stalled_timeout = 120  # no output before completion means the process is stuck
                 max_total_time = 600  # 10 minutes max for any download
-                start_time = time.time()
                 
                 if process.stdout is None:
                     raise Exception("Failed to capture process output")
@@ -814,8 +896,8 @@ def download_worker():
                         if completed_match:
                             completed_count = int(completed_match.group(1))
                             total_count = int(completed_match.group(2))
-                            # Only mark download_seen when we see the final completion summary
-                            download_seen = True
+                            # A 0/0 summary is emitted after some fatal startup failures.
+                            download_seen = completed_count > 0
                         
                         # Also check for "Downloaded" as a standalone line (single track completion)
                         line_lower = line.lower().strip()
@@ -835,7 +917,14 @@ def download_worker():
                         elif 'failed to get decryption keys' in line_lower or 'cannot get decryption keys' in line_lower:
                             critical_error = True
                             error_message = "Failed to get decryption keys. Check wrapper service and Apple ID authentication."
-                        elif 'unauthorized' in line_lower or '401' in line_lower:
+                        elif (
+                            'unauthorized' in line_lower
+                            or re.search(
+                                r'(?:authentication|http|status|error).{0,20}\b401\b|'
+                                r'\b401\b.{0,20}(?:unauthorized|authentication|status|error)',
+                                line_lower
+                            )
+                        ):
                             critical_error = True
                             error_message = "Authentication failed. Please re-login to your Apple ID."
                         elif 'docker' in line_lower and ('not running' in line_lower or 'not found' in line_lower):
@@ -878,40 +967,22 @@ def download_worker():
                         # Kill if exceeded max total time
                         if total_time > max_total_time:
                             logger.warning(f"Process exceeded max time ({total_time:.1f}s), terminating...")
-                            # For docker containers, we need to kill container as well
-                            try:
-                                # Get running containers and stop any matching our download
-                                result = run_subprocess(['docker', 'ps', '-q', '--filter', 'ancestor=ghcr.io/zhaarey/apple-music-downloader'], 
-                                                       capture_output=True, text=True, timeout=5)
-                                for container_id in result.stdout.strip().split('\n'):
-                                    if container_id:
-                                        run_subprocess(['docker', 'stop', container_id], timeout=10)
-                            except Exception as e:
-                                logger.warning(f"Failed to stop docker container: {e}")
-                            process.terminate()
-                            try:
-                                process.wait(timeout=5)
-                            except subprocess.TimeoutExpired:
-                                process.kill()
+                            critical_error = True
+                            error_message = "Download timed out after 10 minutes."
+                            terminate_download_process(process, container_name)
+                            break
+
+                        if not download_seen and idle_time > stalled_timeout:
+                            logger.warning(f"Process produced no output for {idle_time:.1f}s, terminating...")
+                            critical_error = True
+                            error_message = "Download stalled with no output for 2 minutes."
+                            terminate_download_process(process, container_name)
                             break
                         
                         # If we've seen a download complete and been idle, kill the hung process
                         if download_seen and idle_time > idle_timeout:
                             logger.warning(f"Process appears hung after download (idle {idle_time:.1f}s), terminating...")
-                            # For docker containers, we need to kill container as well
-                            try:
-                                result = run_subprocess(['docker', 'ps', '-q', '--filter', 'ancestor=ghcr.io/zhaarey/apple-music-downloader'], 
-                                                       capture_output=True, text=True, timeout=5)
-                                for container_id in result.stdout.strip().split('\n'):
-                                    if container_id:
-                                        run_subprocess(['docker', 'stop', container_id], timeout=10)
-                            except Exception as e:
-                                logger.warning(f"Failed to stop docker container: {e}")
-                            process.terminate()
-                            try:
-                                process.wait(timeout=5)
-                            except subprocess.TimeoutExpired:
-                                process.kill()
+                            terminate_download_process(process, container_name)
                             break
                 
                 return_code = process.poll() if process.poll() is not None else 0
@@ -983,7 +1054,7 @@ def download_worker():
                 logger.info(f"Final is_success: {is_success}")
                 
                 # Embed artwork for all downloaded files (albums, playlists, and songs)
-                if is_success and completed_count > 0:
+                if is_success:
                     try:
                         # Look for recently modified m4a files
                         config = load_config()
@@ -1012,15 +1083,18 @@ def download_worker():
                         
                         logger.info(f"Searching for files to embed artwork in: {search_dir}")
                         
-                        # Find m4a files modified in the last 2 minutes
-                        recent_time = time.time() - 120
+                        # Only process files written by this queue item.
+                        recent_time = start_time
                         files_fixed = 0
+                        url_info = downloads[download_id].get('url_info', {})
+                        fallback_song_id = url_info.get('id') if url_info.get('type') == 'song' else None
                         for root, dirs, files in os.walk(search_dir):
                             for f in files:
                                 if f.endswith('.m4a'):
                                     filepath = os.path.join(root, f)
                                     if os.path.getmtime(filepath) > recent_time:
-                                        if embed_artwork_for_file(filepath):
+                                        fallback_artwork = url_info.get('artwork')
+                                        if embed_artwork_for_file(filepath, fallback_artwork, fallback_song_id):
                                             files_fixed += 1
                         if files_fixed > 0:
                             logger.info(f"Embedded artwork for {files_fixed} file(s)")
@@ -1079,14 +1153,17 @@ def download_worker():
                         else:
                             downloads[download_id]['error'] = "Download failed. Check the output for details."
                     
-                    # Track completed download for auto-download feature
-                    if is_success and downloads[download_id].get('auto_download'):
+                    # Track playlist items only after a successful download.
+                    if is_success and downloads[download_id].get('playlist_id'):
                         playlist_id = downloads[download_id].get('playlist_id')
-                        # Extract catalog ID from URL
-                        url = downloads[download_id].get('url', '')
-                        url_info = parse_apple_music_url(url)
-                        if url_info and playlist_id:
-                            mark_track_downloaded_for_auto_download(url_info['id'], playlist_id)
+                        source_catalog_id = downloads[download_id].get('source_catalog_id')
+                        if source_catalog_id:
+                            mark_track_downloaded_for_auto_download(source_catalog_id, playlist_id)
+                        else:
+                            url = downloads[download_id].get('url', '')
+                            url_info = parse_apple_music_url(url)
+                            if url_info:
+                                mark_track_downloaded_for_auto_download(url_info['id'], playlist_id)
                     
                     # Automatic retry with AAC if lossless codec not found
                     if not is_success and no_codec_error:
@@ -1096,15 +1173,22 @@ def download_worker():
                             # Create new options with AAC quality
                             aac_options = options.copy()
                             aac_options['quality'] = 'aac'
-                            # Queue the retry
-                            download_queue.put((download_id + '_aac_retry', url, aac_options))
+                            downloads[download_id]['status'] = 'retrying'
                             downloads[download_id]['error'] = f"{selected_quality.upper()} not available. Automatically retrying with AAC..."
+                            download_queue.put((download_id, url, aac_options))
+
+                    if downloads[download_id]['status'] not in ACTIVE_DOWNLOAD_STATUSES:
+                        release_download_registration_locked(download_id)
                 
             except Exception as e:
                 logger.exception(f"Download error: {e}")
                 with download_lock:
                     downloads[download_id]['status'] = 'failed'
                     downloads[download_id]['error'] = str(e)
+                    release_download_registration_locked(download_id)
+            finally:
+                if process and process.poll() is None:
+                    terminate_download_process(process, container_name)
             
             socketio.emit('download_update', downloads[download_id], namespace='/')
             download_queue.task_done()
@@ -1197,47 +1281,25 @@ def wrapper_health_monitor():
                 consecutive_failures += 1
                 logger.warning(f"Wrapper health check failed: {e} (failures: {consecutive_failures})")
             
-            # If wrapper has failed 3 consecutive times, try to restart it
-            if consecutive_failures >= 3:
-                logger.error(f"Wrapper has failed {consecutive_failures} consecutive health checks, attempting restart...")
-                try:
-                    # Try to restart wrapper
-                    wrapper_data = os.path.join(BASE_DIR, 'wrapper-data')
-                    
-                    # Stop existing container
-                    run_subprocess(['docker', 'rm', '-f', 'amd-wrapper'], 
-                                  capture_output=True, timeout=10)
-                    
-                    # Start new container (use local built image)
-                    result = run_subprocess([
-                        'docker', 'run', '-d',
-                        '--name', 'amd-wrapper',
-                        '--restart', 'unless-stopped',
-                        '-v', f'{wrapper_data}:/app/rootfs/data',
-                        '-p', '10020:10020',
-                        '-p', '20020:20020',
-                        '-p', '30020:30020',
-                        '-e', 'args=-H 0.0.0.0',
-                        'amd-wrapper-local'
-                    ], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
-                    
-                    if result.returncode == 0:
-                        logger.info(f"Wrapper restarted successfully: {result.stdout.strip()[:12]}")
-                        consecutive_failures = 0
-                        time.sleep(5)  # Give wrapper time to start
-                    else:
-                        logger.error(f"Failed to restart wrapper: {result.stderr}")
-                        
-                except Exception as e:
-                    logger.error(f"Error restarting wrapper: {e}")
+            # A playback-lease rejection intentionally stops the wrapper. Restarting it
+            # here would immediately reclaim the Apple Music session from other devices.
+            # Download-specific recovery starts the wrapper only when it is actually needed.
+            if consecutive_failures == 3:
+                logger.warning("Wrapper remains stopped and will restart when a download needs it")
                     
         except Exception as e:
             logger.error(f"Wrapper health monitor error: {e}")
 
 
-# Start download worker thread (only in main process, not in reloader)
-import os as _os
-if _os.environ.get('WERKZEUG_RUN_MAIN') == 'true' or not app.debug:
+background_workers_started = False
+
+
+def start_background_workers():
+    """Start one set of background workers for the active server instance."""
+    global background_workers_started
+    if background_workers_started:
+        return
+
     worker_thread = threading.Thread(target=download_worker, daemon=True)
     worker_thread.start()
     logger.info("Download worker thread started")
@@ -1246,6 +1308,7 @@ if _os.environ.get('WERKZEUG_RUN_MAIN') == 'true' or not app.debug:
     health_monitor_thread = threading.Thread(target=wrapper_health_monitor, daemon=True)
     health_monitor_thread.start()
     logger.info("Wrapper health monitor started")
+    background_workers_started = True
 
 
 # Routes
@@ -1259,7 +1322,7 @@ def index():
 def settings_page():
     """Settings page"""
     config = load_config()
-    return render_template('settings.html', config=config)
+    return render_template('settings.html', config=config, cache_v=CACHE_VERSION)
 
 
 @app.route('/downloads/<path:filename>')
@@ -1337,9 +1400,16 @@ def start_download():
     url_info['artist'] = item_artist or ''
     url_info['artwork'] = item_artwork or ''
 
+    selected_tracks = data.get('selectedTracks') or []
+    try:
+        selected_tracks = sorted({int(track) for track in selected_tracks if int(track) > 0})
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Selected tracks must be positive track numbers'}), 400
+
     options = {
         'quality': data.get('quality', 'alac'),
-        'select': data.get('select', False),
+        'select': bool(selected_tracks) and url_info['type'] == 'album',
+        'selected_tracks': selected_tracks,
         'song': data.get('song', False) or url_info['type'] == 'song',
         'debug': debug_mode,
         'downloader_path': data.get('downloader_path', BASE_DIR)
@@ -1347,24 +1417,25 @@ def start_download():
     
     download_id = str(uuid.uuid4())[:8]
     
-    with download_lock:
-        downloads[download_id] = {
-            'id': download_id,
-            'url': url,
-            'url_info': url_info,
-            'options': options,
-            'status': 'queued',
-            'created_at': datetime.now().isoformat(),
-            'output': [],
-            'progress': None
-        }
-    
-    download_queue.put((download_id, url, options))
+    download = {
+        'id': download_id,
+        'url': url,
+        'url_info': url_info,
+        'options': options,
+        'status': 'queued',
+        'created_at': datetime.now().isoformat(),
+        'output': [],
+        'progress': None
+    }
+    download_id, was_queued = register_download(download)
+    if was_queued:
+        download_queue.put((download_id, url, options))
     
     return jsonify({
         'success': True,
         'download_id': download_id,
-        'message': 'Download added to queue'
+        'duplicate': not was_queued,
+        'message': 'Download added to queue' if was_queued else 'Download is already queued or running'
     })
 
 
@@ -1389,9 +1460,196 @@ def remove_download(download_id):
     """Remove download from history"""
     with download_lock:
         if download_id in downloads:
+            if downloads[download_id].get('status') in ACTIVE_DOWNLOAD_STATUSES:
+                return jsonify({'error': 'Active downloads cannot be removed'}), 409
+            release_download_registration_locked(download_id)
             del downloads[download_id]
             return jsonify({'success': True})
     return jsonify({'error': 'Download not found'}), 404
+
+
+def normalize_catalog_match_text(value):
+    """Normalize catalog text for exact title and artist comparisons."""
+    return re.sub(r'[^\w]+', '', str(value or '').casefold())
+
+
+_library_catalog_search_lock = threading.Lock()
+_library_catalog_search_last_at = 0.0
+
+
+def get_available_library_song_ids(tracks, storefront):
+    """Return catalog IDs that currently resolve as audio songs in one batch."""
+    catalog_ids = list(dict.fromkeys(
+        str(track.get('catalogId') or '').strip() for track in tracks if track.get('catalogId')
+    ))
+    tokens = get_wrapper_tokens(retry_on_timeout=False)
+    dev_token = tokens.get('dev_token') if tokens else None
+    if not catalog_ids or not dev_token:
+        return None
+
+    headers = {
+        'Authorization': f'Bearer {dev_token}',
+        'Origin': 'https://music.apple.com',
+        'Referer': 'https://music.apple.com/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+    available_ids = set()
+
+    try:
+        for offset in range(0, len(catalog_ids), 100):
+            response = requests.get(
+                f'https://amp-api.music.apple.com/v1/catalog/{storefront}/songs',
+                headers=headers,
+                params={'ids': ','.join(catalog_ids[offset:offset + 100])},
+                timeout=15
+            )
+            if response.status_code != 200:
+                logger.warning(f"Batch song lookup failed: HTTP {response.status_code}")
+                return None
+            available_ids.update(str(item.get('id')) for item in response.json().get('data', []))
+        return available_ids
+    except requests.RequestException as error:
+        logger.warning(f"Batch song lookup failed: {error}")
+        return None
+
+
+def resolve_library_track_song(track, storefront, available_song_ids=None):
+    """Resolve a library track to an audio song, returning (track, changed)."""
+    global _library_catalog_search_last_at
+
+    catalog_id = str(track.get('catalogId') or '').strip()
+    catalog_type = re.sub(r'[^a-z]', '', str(track.get('catalogType') or '').casefold())
+
+    if not catalog_id:
+        return None, False
+    if available_song_ids is not None and catalog_id in available_song_ids:
+        return dict(track), False
+
+    tokens = get_wrapper_tokens(retry_on_timeout=False)
+    dev_token = tokens.get('dev_token') if tokens else None
+    if not dev_token:
+        logger.warning(f"Cannot resolve library catalog item {catalog_id}: no developer token")
+        return (dict(track), False) if catalog_type in {'song', 'songs', ''} else (None, False)
+
+    headers = {
+        'Authorization': f'Bearer {dev_token}',
+        'Origin': 'https://music.apple.com',
+        'Referer': 'https://music.apple.com/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+
+    try:
+        # Older clients do not send catalogType, so first check whether the ID
+        # already identifies an audio song before falling back to search.
+        if available_song_ids is None and catalog_type not in {'musicvideo', 'musicvideos'}:
+            response = requests.get(
+                f'https://amp-api.music.apple.com/v1/catalog/{storefront}/songs/{catalog_id}',
+                headers=headers,
+                timeout=10
+            )
+            if response.status_code == 200 and response.json().get('data'):
+                resolved_track = dict(track)
+                resolved_track['catalogType'] = 'songs'
+                return resolved_track, False
+
+        track_name = str(track.get('name') or '').strip()
+        artist_name = str(track.get('artistName') or '').strip()
+        if not track_name or not artist_name:
+            logger.warning(f"Cannot resolve non-song catalog item {catalog_id}: missing title or artist")
+            return None, False
+
+        normalized_title = normalize_catalog_match_text(track_name)
+        normalized_artist = normalize_catalog_match_text(artist_name)
+
+        def select_match(candidates):
+            title_matches = [
+                candidate for candidate in candidates
+                if normalize_catalog_match_text(candidate.get('attributes', {}).get('name')) == normalized_title
+            ]
+            exact_match = next((
+                candidate for candidate in title_matches
+                if normalize_catalog_match_text(candidate.get('attributes', {}).get('artistName')) == normalized_artist
+            ), None)
+            return exact_match or (title_matches[0] if len(title_matches) == 1 else None)
+
+        response = None
+        with _library_catalog_search_lock:
+            search_delay = 1.1 - (time.monotonic() - _library_catalog_search_last_at)
+            if search_delay > 0:
+                time.sleep(search_delay)
+
+            for attempt in range(4):
+                response = requests.get(
+                    f'https://amp-api.music.apple.com/v1/catalog/{storefront}/search',
+                    headers=headers,
+                    params={
+                        'term': f'{track_name} {artist_name}',
+                        'types': 'songs',
+                        'limit': 25
+                    },
+                    timeout=15
+                )
+                _library_catalog_search_last_at = time.monotonic()
+                if response.status_code != 429:
+                    break
+                if attempt < 3:
+                    time.sleep(2 ** (attempt + 1))
+
+        candidates = []
+        if response is not None and response.status_code == 200:
+            candidates = response.json().get('results', {}).get('songs', {}).get('data', [])
+        match = select_match(candidates)
+
+        if not match:
+            fallback_response = requests.get(
+                'https://itunes.apple.com/search',
+                params={
+                    'term': f'{track_name} {artist_name}',
+                    'country': storefront,
+                    'media': 'music',
+                    'entity': 'song',
+                    'limit': 25
+                },
+                timeout=15
+            )
+            if fallback_response.status_code == 200:
+                fallback_candidates = [
+                    {
+                        'id': str(candidate.get('trackId')),
+                        'attributes': {
+                            'name': candidate.get('trackName'),
+                            'artistName': candidate.get('artistName')
+                        }
+                    }
+                    for candidate in fallback_response.json().get('results', [])
+                    if candidate.get('trackId')
+                ]
+                match = select_match(fallback_candidates)
+
+        if not match:
+            logger.warning(f"No exact audio song match for {artist_name} - {track_name} ({catalog_id})")
+            return None, False
+
+        attributes = match.get('attributes', {})
+        resolved_track = dict(track)
+        resolved_track.update({
+            'catalogId': str(match.get('id')),
+            'catalogType': 'songs',
+            'name': attributes.get('name') or track_name,
+            'artistName': attributes.get('artistName') or artist_name
+        })
+        artwork = attributes.get('artwork', {})
+        if artwork.get('url'):
+            resolved_track['artwork'] = artwork['url'].replace('{w}', '100').replace('{h}', '100')
+
+        logger.info(
+            f"Resolved library catalog item {catalog_id} to audio song {resolved_track['catalogId']} "
+            f"({resolved_track['artistName']} - {resolved_track['name']})"
+        )
+        return resolved_track, resolved_track['catalogId'] != catalog_id
+    except requests.RequestException as error:
+        logger.warning(f"Failed to resolve library catalog item {catalog_id}: {error}")
+        return None, False
 
 
 @app.route('/api/library/download', methods=['POST'])
@@ -1426,7 +1684,19 @@ def download_library_tracks():
     
     # Queue downloads for each track
     download_ids = []
+    duplicate_count = 0
+    resolved_count = 0
+    resolution_failure_count = 0
+    available_song_ids = get_available_library_song_ids(valid_tracks, storefront)
     for track in valid_tracks:
+        source_catalog_id = str(track['catalogId'])
+        track, was_resolved = resolve_library_track_song(track, storefront, available_song_ids)
+        if not track:
+            resolution_failure_count += 1
+            continue
+        if was_resolved:
+            resolved_count += 1
+
         catalog_id = track['catalogId']
         track_name = track.get('name', '')
         artist_name = track.get('artistName', '')
@@ -1444,34 +1714,35 @@ def download_library_tracks():
         
         download_id = str(uuid.uuid4())[:8]
         
-        with download_lock:
-            downloads[download_id] = {
-                'id': download_id,
-                'url': url,
-                'url_info': {
-                    'type': 'song', 
-                    'storefront': storefront, 
-                    'id': catalog_id,
-                    'name': track_name,
-                    'artist': artist_name
-                },
-                'options': options,
-                'status': 'queued',
-                'created_at': datetime.now().isoformat(),
-                'output': [],
-                'progress': None,
-                'source': f'Library: {playlist_name}',
-                'playlist_id': playlist_id,
-                'playlist_name': playlist_name,
-                'auto_download': add_to_auto_download
-            }
-        
+        download = {
+            'id': download_id,
+            'url': url,
+            'url_info': {
+                'type': 'song',
+                'storefront': storefront,
+                'id': catalog_id,
+                'name': track_name,
+                'artist': artist_name,
+                'artwork': track.get('artwork', '')
+            },
+            'options': options,
+            'status': 'queued',
+            'created_at': datetime.now().isoformat(),
+            'output': [],
+            'progress': None,
+            'source': f'Library: {playlist_name}',
+            'playlist_id': playlist_id,
+            'playlist_name': playlist_name,
+            'source_catalog_id': source_catalog_id,
+            'auto_download': add_to_auto_download
+        }
+        download_id, was_queued = register_download(download)
+        if not was_queued:
+            duplicate_count += 1
+            continue
+
         download_queue.put((download_id, url, options))
         download_ids.append(download_id)
-        
-        # Mark track as downloaded for auto-download tracking
-        if playlist_id:
-            mark_track_downloaded_for_auto_download(catalog_id, playlist_id)
     
     # Add playlist to auto-download if downloading all tracks
     added_to_auto_download = False
@@ -1483,7 +1754,9 @@ def download_library_tracks():
         'success': True,
         'download_ids': download_ids,
         'message': f'Queued {len(download_ids)} tracks for download',
-        'skipped': len(track_info) - len(valid_tracks),
+        'skipped': len(track_info) - len(valid_tracks) + resolution_failure_count,
+        'resolved': resolved_count,
+        'duplicates': duplicate_count,
         'addedToAutoDownload': added_to_auto_download
     })
 
@@ -1670,6 +1943,7 @@ def run_auto_download_check():
     
     config = load_config()
     auto_config = config.get('auto-download', {})
+    storefront = config.get('storefront', 'us')
     
     if not auto_config.get('enabled', False):
         logger.info("Auto-download is disabled, skipping check")
@@ -1721,19 +1995,22 @@ def run_auto_download_check():
                 
                 for track in tracks:
                     # Get catalog ID
-                    catalog_id = track.get('attributes', {}).get('playParams', {}).get('catalogId')
+                    attributes = track.get('attributes', {})
+                    play_params = attributes.get('playParams', {})
+                    catalog_id = play_params.get('catalogId')
+                    catalog_type = play_params.get('kind')
                     if not catalog_id:
                         rels = track.get('relationships', {}).get('catalog', {}).get('data', [])
                         if rels:
                             catalog_id = rels[0].get('id')
+                            catalog_type = rels[0].get('type') or catalog_type
                     
                     if catalog_id and catalog_id not in playlist_downloaded:
-                        track_name = track.get('attributes', {}).get('name', 'Unknown')
-                        artist_name = track.get('attributes', {}).get('artistName', 'Unknown')
                         new_tracks.append({
-                            'catalog_id': catalog_id,
-                            'name': track_name,
-                            'artist': artist_name,
+                            'catalogId': catalog_id,
+                            'catalogType': catalog_type,
+                            'name': attributes.get('name', 'Unknown'),
+                            'artistName': attributes.get('artistName', 'Unknown'),
                             'playlist_id': playlist_id
                         })
                 
@@ -1750,9 +2027,20 @@ def run_auto_download_check():
         # Queue new tracks for download
         if new_tracks:
             logger.info(f"Found {len(new_tracks)} new tracks to download")
+            available_song_ids = get_available_library_song_ids(new_tracks, storefront)
             for track in new_tracks:
+                source_catalog_id = str(track['catalogId'])
+                track, was_resolved = resolve_library_track_song(
+                    track, storefront, available_song_ids
+                )
+                if not track:
+                    logger.warning(f"Skipping unavailable auto-download track {source_catalog_id}")
+                    continue
+                if was_resolved:
+                    logger.info(f"Auto-download resolved {source_catalog_id} to {track['catalogId']}")
+
                 # Create download URL
-                url = f"https://music.apple.com/us/song/{track['catalog_id']}"
+                url = f"https://music.apple.com/{storefront}/song/{track['catalogId']}"
                 
                 # Add to download queue
                 download_id = str(uuid.uuid4())
@@ -1767,18 +2055,32 @@ def run_auto_download_check():
                 download = {
                     'id': download_id,
                     'url': url,
+                    'url_info': {
+                        'type': 'song',
+                        'storefront': storefront,
+                        'id': track['catalogId'],
+                        'name': track['name'],
+                        'artist': track['artistName'],
+                        'artwork': track.get('artwork', '')
+                    },
+                    'options': options,
                     'status': 'queued',
-                    'progress': 0,
-                    'message': f"Auto-download: {track['name']} by {track['artist']}",
-                    'created': datetime.now().isoformat(),
+                    'progress': None,
+                    'output': [],
+                    'message': f"Auto-download: {track['name']} by {track['artistName']}",
+                    'created_at': datetime.now().isoformat(),
                     'type': 'song',
                     'title': track['name'],
-                    'subtitle': track['artist'],
+                    'subtitle': track['artistName'],
                     'auto_download': True,
-                    'playlist_id': track['playlist_id']
+                    'playlist_id': track['playlist_id'],
+                    'source_catalog_id': source_catalog_id
                 }
-                downloads[download_id] = download
-                download_queue.put((download_id, url, options))
+                download_id, was_queued = register_download(download)
+                if was_queued:
+                    download_queue.put((download_id, url, options))
+                else:
+                    logger.info(f"Skipping duplicate active auto-download: {url}")
                 
         else:
             logger.info("No new tracks found")
@@ -2434,7 +2736,7 @@ def list_files():
                         pass
                 
                 files.append({
-                    'name': title or filename,
+                    'name': re.sub(r'\.(?:m4a|mp4|flac|mp3)$', '', title or filename, flags=re.IGNORECASE),
                     'path': rel_path,
                     'size': os.path.getsize(filepath),
                     'modified': datetime.fromtimestamp(os.path.getmtime(filepath)).isoformat(),
@@ -2852,6 +3154,90 @@ _library_playlists_cache = None
 _library_playlists_cache_time = 0
 LIBRARY_PLAYLISTS_CACHE_TTL = 300  # 5 minutes
 
+_recently_played_cache = None
+_recently_played_cache_time = 0
+RECENTLY_PLAYED_CACHE_TTL = 300
+
+
+@app.route('/api/library/recently-played')
+def get_recently_played():
+    """Fetch the user's cross-device Recently Played album shelf."""
+    global _recently_played_cache, _recently_played_cache_time
+
+    force_refresh = request.args.get('refresh') == '1'
+    if (not force_refresh and _recently_played_cache is not None and
+            (time.time() - _recently_played_cache_time) < RECENTLY_PLAYED_CACHE_TTL):
+        return jsonify({'success': True, 'tracks': _recently_played_cache, 'cached': True})
+
+    config = load_config()
+    dev_token = (config.get('authorization-token') or '').strip()
+    music_token = (config.get('media-user-token') or '').strip()
+
+    if not dev_token:
+        dev_token = get_apple_music_token()
+
+    if not music_token:
+        tokens = get_wrapper_tokens(retry_on_timeout=False)
+        if tokens:
+            dev_token = dev_token or tokens.get('dev_token')
+            music_token = tokens.get('music_token')
+
+    if not dev_token or not music_token:
+        return jsonify({
+            'success': False,
+            'error': 'Sign in to Apple Music in Settings to view recently played tracks.'
+        }), 401
+
+    try:
+        response = requests.get(
+            'https://amp-api.music.apple.com/v1/me/recent/played',
+            headers={
+                'Authorization': f'Bearer {dev_token}',
+                'Media-User-Token': music_token,
+                'Cache-Control': 'no-cache' if force_refresh else 'max-age=60',
+                'Pragma': 'no-cache' if force_refresh else '',
+                'Origin': 'https://music.apple.com',
+                'Referer': 'https://music.apple.com/',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            },
+            params={'limit': 10, 'types': 'albums'},
+            timeout=15
+        )
+
+        if response.status_code in (401, 403):
+            return jsonify({'success': False, 'error': 'Apple Music authentication expired.'}), 401
+        if response.status_code != 200:
+            return jsonify({'success': False, 'error': f'Apple Music API error: {response.status_code}'}), 502
+
+        tracks = []
+        for item in response.json().get('data', []):
+            attrs = item.get('attributes', {})
+            artwork = attrs.get('artwork') or {}
+            artwork_url = artwork.get('url')
+            if artwork_url:
+                artwork_url = artwork_url.replace('{w}', '320').replace('{h}', '320')
+
+            album_id = item.get('id')
+            tracks.append({
+                'id': album_id,
+                'albumId': album_id,
+                'name': attrs.get('name', 'Unknown'),
+                'artistName': attrs.get('artistName', 'Unknown Artist'),
+                'albumName': attrs.get('name', 'Unknown'),
+                'artwork': artwork_url,
+                'url': attrs.get('url', ''),
+                'resourceType': 'album'
+            })
+
+        _recently_played_cache = tracks
+        _recently_played_cache_time = time.time()
+        return jsonify({'success': True, 'tracks': tracks})
+    except requests.Timeout:
+        return jsonify({'success': False, 'error': 'Apple Music request timed out.'}), 504
+    except Exception as e:
+        logger.error(f"Failed to fetch recently played tracks: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @app.route('/api/library/playlists')
 def get_library_playlists():
@@ -2994,9 +3380,11 @@ def get_library_playlist_tracks(playlist_id):
                 
                 # Get catalog ID first from playParams
                 catalog_id = None
+                catalog_type = None
                 play_params = attrs.get('playParams', {})
                 if play_params and play_params.get('catalogId'):
                     catalog_id = play_params.get('catalogId')
+                    catalog_type = play_params.get('kind')
                 
                 # Check catalog relationship for ID and artwork
                 artwork_url = None
@@ -3004,6 +3392,7 @@ def get_library_playlist_tracks(playlist_id):
                     catalog_rel = item.get('relationships', {}).get('catalog', {}).get('data', [])
                     if catalog_rel:
                         catalog_data = catalog_rel[0]
+                        catalog_type = catalog_data.get('type') or catalog_type
                         if not catalog_id:
                             catalog_id = catalog_data.get('id')
                         # Get artwork from catalog
@@ -3026,6 +3415,7 @@ def get_library_playlist_tracks(playlist_id):
                 tracks.append({
                     'id': item.get('id'),
                     'catalogId': catalog_id,
+                    'catalogType': catalog_type,
                     'trackNumber': idx,
                     'name': attrs.get('name', 'Unknown'),
                     'artistName': attrs.get('artistName', 'Unknown Artist'),
@@ -3189,7 +3579,7 @@ def start_wrapper():
         result = run_subprocess([
             'docker', 'run', '-d',
             '--name', 'amd-wrapper',
-            '--restart', 'unless-stopped',
+            '--restart', 'no',
             '-v', f'{wrapper_data}:/app/rootfs/data',
             '-p', '10020:10020',
             '-p', '20020:20020', 
@@ -3220,8 +3610,77 @@ def start_wrapper():
 setup_session = {
     'process': None,
     'state': 'idle',  # idle, waiting_2fa, success, error
-    'message': ''
+    'message': '',
+    'token_hash': None
 }
+
+
+def get_wrapper_media_token_path():
+    return os.path.join(
+        BASE_DIR, 'wrapper-data', 'data', 'com.apple.android.music', 'files', 'MUSIC_TOKEN'
+    )
+
+
+def get_wrapper_media_token_hash():
+    token_path = get_wrapper_media_token_path()
+    if not os.path.isfile(token_path):
+        return None
+    try:
+        with open(token_path, 'rb') as token_file:
+            return hashlib.sha256(token_file.read().strip()).hexdigest()
+    except OSError:
+        return None
+
+
+def save_wrapper_media_token(previous_hash=None):
+    """Copy the media token generated by wrapper login into app configuration."""
+    token_path = get_wrapper_media_token_path()
+    if not os.path.isfile(token_path):
+        return False
+
+    try:
+        with open(token_path, 'rb') as token_file:
+            token_bytes = token_file.read().strip()
+        if previous_hash and hashlib.sha256(token_bytes).hexdigest() == previous_hash:
+            return False
+        music_token = token_bytes.decode('utf-8')
+        if len(music_token) < 50:
+            return False
+
+        config = load_config()
+        config['media-user-token'] = music_token
+        save_config(config)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to save wrapper media token: {e}")
+        return False
+
+
+def stop_wrapper_login_process(process):
+    if not process:
+        return
+    try:
+        process.terminate()
+        process.wait(timeout=5)
+    except Exception:
+        try:
+            process.kill()
+        except Exception:
+            pass
+
+
+def finish_wrapper_login(process):
+    """Save the login token and stop the temporary wrapper process."""
+    token_saved = save_wrapper_media_token(setup_session.get('token_hash'))
+    setup_session['state'] = 'success' if token_saved else 'error'
+    setup_session['message'] = (
+        'Media token saved successfully.' if token_saved
+        else 'Login succeeded, but no media token was generated.'
+    )
+
+    stop_wrapper_login_process(process)
+    setup_session['process'] = None
+    return token_saved
 
 @app.route('/api/wrapper-setup/check')
 def check_wrapper_setup():
@@ -3273,7 +3732,6 @@ def check_wrapper_setup():
 def wrapper_setup_login():
     """Start the wrapper login process"""
     import threading
-    import queue
     
     data = request.json
     email = data.get('email', '')
@@ -3298,19 +3756,33 @@ def wrapper_setup_login():
             }), 400
     except Exception as e:
         return jsonify({'success': False, 'error': f'Docker check failed: {e}'}), 500
+
+    # Avoid two authenticated wrapper sessions sharing the same account data.
+    run_subprocess(['docker', 'stop', 'amd-wrapper'], capture_output=True, timeout=10)
     
     # Start the login process
     setup_session['state'] = 'logging_in'
     setup_session['message'] = ''
+    setup_session['token_hash'] = get_wrapper_media_token_hash()
     
     def run_login():
+        process = None
+        credentials_dir = None
         try:
-            # Run Docker login command
+            credentials_dir = tempfile.mkdtemp(prefix='amd-login-')
+            credentials_path = os.path.join(credentials_dir, 'apple_credentials')
+            with open(credentials_path, 'w', encoding='utf-8', newline='') as credentials_file:
+                credentials_file.write(f'{email}:{password}')
+
+            # Keep credentials out of Docker and OS process metadata. The wrapper
+            # reads them from a short-lived, read-only bind-mounted file instead.
             cmd = [
                 'docker', 'run', '-i', '--rm',
                 '-v', f'{wrapper_data}:/app/rootfs/data',
+                '-v', f'{credentials_path}:/run/secrets/apple_credentials:ro',
                 'amd-wrapper-local',
-                '/app/wrapper', '-L', f'{email}:{password}', '-H', '0.0.0.0'
+                'bash', '-c',
+                '/app/wrapper -L "$(cat /run/secrets/apple_credentials)" -H 0.0.0.0'
             ]
             
             process = popen_subprocess(
@@ -3333,16 +3805,14 @@ def wrapper_setup_login():
                 logger.info(f"Wrapper login output: {line}")
                 
                 # Check for 2FA prompt
-                if '2FA: true' in line or '2FA code:' in line.lower():
+                if '2FA: true' in line or '2fa code:' in line.lower():
                     setup_session['state'] = 'waiting_2fa'
                     setup_session['message'] = 'Enter the 2FA code sent to your device'
-                    # Wait for 2FA code to be submitted
-                    return
+                    continue
                 
                 # Check for success
                 if 'account info cached successfully' in line.lower():
-                    setup_session['state'] = 'success'
-                    setup_session['message'] = 'Login successful!'
+                    finish_wrapper_login(process)
                     break
                 
                 # Check for failure
@@ -3356,15 +3826,19 @@ def wrapper_setup_login():
                     setup_session['message'] = 'Invalid credentials. Please check your email and password.'
                     break
             
-            process.wait(timeout=30)
-            
-            if setup_session['state'] == 'logging_in':
+            if setup_session['state'] in ('logging_in', 'waiting_2fa', 'verifying'):
                 setup_session['state'] = 'error'
                 setup_session['message'] = 'Login process ended unexpectedly'
                 
         except Exception as e:
             setup_session['state'] = 'error'
             setup_session['message'] = str(e)
+        finally:
+            if setup_session['state'] not in ('waiting_2fa', 'success'):
+                stop_wrapper_login_process(process)
+                setup_session['process'] = None
+            if credentials_dir:
+                shutil.rmtree(credentials_dir, ignore_errors=True)
     
     thread = threading.Thread(target=run_login, daemon=True)
     thread.start()
@@ -3400,46 +3874,31 @@ def wrapper_setup_2fa():
         # Send 2FA code to the process
         process.stdin.write(code + '\n')
         process.stdin.flush()
+        setup_session['state'] = 'verifying'
+        setup_session['message'] = 'Verifying code...'
         
-        # Wait for result
+        # The background login thread continues reading process output.
         import time
-        timeout = 15
+        timeout = 30
         start = time.time()
         
         while time.time() - start < timeout:
-            if process.poll() is not None:
+            if setup_session['state'] in ('success', 'error'):
                 break
-            
-            # Try to read output
-            try:
-                line = process.stdout.readline()
-                if line:
-                    line = line.strip()
-                    logger.info(f"Wrapper 2FA output: {line}")
-                    
-                    if 'account info cached successfully' in line.lower():
-                        setup_session['state'] = 'success'
-                        setup_session['message'] = 'Login successful!'
-                        break
-                    
-                    if 'login failed' in line.lower() or 'error' in line.lower():
-                        setup_session['state'] = 'error'
-                        setup_session['message'] = 'Verification failed'
-                        break
-            except Exception:
-                pass
-            
             time.sleep(0.5)
         
-        # Clean up process
-        try:
-            process.terminate()
-        except Exception:
-            pass
-        
         if setup_session['state'] == 'success':
-            return jsonify({'success': True, 'state': 'success'})
+            return jsonify({
+                'success': True,
+                'state': 'success',
+                'message': setup_session['message']
+            })
         else:
+            if setup_session['state'] == 'verifying':
+                setup_session['state'] = 'error'
+                setup_session['message'] = 'Verification timed out.'
+            stop_wrapper_login_process(process)
+            setup_session['process'] = None
             return jsonify({
                 'success': False, 
                 'error': setup_session.get('message', 'Verification failed')
@@ -3472,7 +3931,7 @@ def wrapper_start_service():
         result = run_subprocess([
             'docker', 'run', '-d',
             '--name', 'amd-wrapper',
-            '--restart', 'unless-stopped',
+            '--restart', 'no',
             '-v', f'{wrapper_data}:/app/rootfs/data',
             '-p', '10020:10020',
             '-p', '20020:20020',
@@ -3561,9 +4020,8 @@ def initialize_auto_download():
 
 
 def startup_docker_and_wrapper():
-    """Start Docker Desktop and the wrapper container on application startup"""
+    """Start Docker Desktop while leaving the playback wrapper demand-driven."""
     import platform
-    import socket
     
     print("\n[Startup] Checking Docker status...")
     
@@ -3623,93 +4081,8 @@ def startup_docker_and_wrapper():
     else:
         print("[Startup] Docker is already running")
     
-    # Now check/start the wrapper
-    print("[Startup] Checking wrapper status...")
-    
-    # Check if wrapper is already running
-    wrapper_running = False
-    try:
-        result = run_subprocess(
-            ['docker', 'ps', '--filter', 'name=amd-wrapper', '--format', '{{.Status}}'],
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            errors='replace',
-            timeout=5
-        )
-        wrapper_running = bool(result.stdout.strip()) and 'Up' in result.stdout
-    except Exception:
-        pass
-    
-    if wrapper_running:
-        print("[Startup] Wrapper is already running")
-        return True
-    
-    # Check if wrapper-data exists and has credentials
-    wrapper_data = os.path.join(BASE_DIR, 'wrapper-data')
-    credentials_exist = os.path.exists(os.path.join(wrapper_data, 'config.json')) or \
-                       os.path.exists(os.path.join(wrapper_data, 'session.json'))
-    
-    if not credentials_exist:
-        print("[Startup] Wrapper credentials not found. Please run setup first.")
-        print("[Startup] The wrapper will start automatically when you complete setup.")
-        return False
-    
-    print("[Startup] Starting wrapper container...")
-    
-    try:
-        # Stop any existing container (may be in stopped state)
-        run_subprocess(['docker', 'rm', '-f', 'amd-wrapper'], 
-                      capture_output=True, timeout=10)
-        
-        # Start new container
-        result = run_subprocess([
-            'docker', 'run', '-d',
-            '--name', 'amd-wrapper',
-            '--restart', 'unless-stopped',
-            '-v', f'{wrapper_data}:/app/rootfs/data',
-            '-p', '10020:10020',
-            '-p', '20020:20020', 
-            '-p', '30020:30020',
-            '-e', 'args=-H 0.0.0.0',
-            'amd-wrapper-local'
-        ], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
-        
-        if result.returncode == 0:
-            print(f"[Startup] Wrapper started successfully (container: {result.stdout.strip()[:12]})")
-            
-            # Wait a moment for ports to be ready
-            print("[Startup] Waiting for wrapper ports to be ready...")
-            for i in range(10):
-                time.sleep(1)
-                try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(1)
-                    result = sock.connect_ex(('127.0.0.1', 10020))
-                    sock.close()
-                    if result == 0:
-                        print(f"[Startup] Wrapper is ready after {i+1} seconds")
-                        return True
-                except Exception:
-                    pass
-            
-            print("[Startup] Wrapper started but ports may not be ready yet")
-            return True
-        else:
-            error_msg = result.stderr or 'Unknown error'
-            if 'No such image' in error_msg or 'Unable to find image' in error_msg:
-                print("[Startup] ERROR: Wrapper image 'amd-wrapper-local' not found.")
-                print("[Startup] Please build it using option 6 in start-wrapper.bat")
-            else:
-                print(f"[Startup] ERROR starting wrapper: {error_msg}")
-            return False
-            
-    except subprocess.TimeoutExpired:
-        print("[Startup] ERROR: Command timed out while starting wrapper")
-        return False
-    except Exception as e:
-        print(f"[Startup] ERROR: {e}")
-        return False
+    print("[Startup] Wrapper remains stopped until a download or explicit start needs it")
+    return True
 
 
 # ========================================
@@ -4246,6 +4619,7 @@ def batch_download():
     
     queued = []
     errors = []
+    duplicates = []
     
     for url in urls:
         try:
@@ -4254,23 +4628,36 @@ def batch_download():
                 errors.append({"url": url, "error": "Invalid URL"})
                 continue
             
-            # Queue the download
+            url_info = parse_apple_music_url(url)
+            if not url_info:
+                errors.append({"url": url, "error": "Invalid Apple Music URL"})
+                continue
+
+            options = {
+                'quality': data.get('quality', 'alac'),
+                'song': url_info['type'] == 'song'
+            }
             download_id = str(uuid.uuid4())
             download_info = {
                 'id': download_id,
                 'url': url,
+                'url_info': url_info,
+                'options': options,
                 'status': 'queued',
-                'progress': 0,
+                'progress': None,
+                'output': [],
                 'message': 'Queued for download',
                 'title': url,
-                'from_batch': True
+                'from_batch': True,
+                'created_at': datetime.now().isoformat()
             }
-            
-            with download_lock:
-                downloads[download_id] = download_info
-            
-            download_queue.put((download_id, url, {}))
-            queued.append({"url": url, "id": download_id})
+
+            download_id, was_queued = register_download(download_info)
+            if was_queued:
+                download_queue.put((download_id, url, options))
+                queued.append({"url": url, "id": download_id})
+            else:
+                duplicates.append({"url": url, "id": download_id})
             
         except Exception as e:
             errors.append({"url": url, "error": str(e)})
@@ -4278,8 +4665,9 @@ def batch_download():
     return jsonify({
         "success": True,
         "queued": len(queued),
+        "duplicates": len(duplicates),
         "errors": len(errors),
-        "details": {"queued": queued, "errors": errors}
+        "details": {"queued": queued, "duplicates": duplicates, "errors": errors}
     })
 
 
@@ -4854,6 +5242,41 @@ def open_browser(port):
     webbrowser.open(f'http://127.0.0.1:{port}')
 
 
+def server_is_running(host, port):
+    """Return whether another local server already owns the requested port."""
+    import socket
+
+    connect_host = '127.0.0.1' if host in ('0.0.0.0', '::') else host
+    try:
+        with socket.create_connection((connect_host, port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+instance_mutex = None
+
+
+def acquire_single_instance():
+    """Atomically claim this application instance on Windows."""
+    global instance_mutex
+    if os.name != 'nt':
+        return True
+
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    mutex = kernel32.CreateMutexW(None, False, 'Local\\AppleMusicDownloader')
+    if not mutex:
+        return False
+    if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        kernel32.CloseHandle(mutex)
+        return False
+
+    instance_mutex = mutex
+    return True
+
+
 if __name__ == '__main__':
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Apple Music Downloader Web Interface')
@@ -4866,6 +5289,12 @@ if __name__ == '__main__':
     parser.add_argument('--debug', '-d', action='store_true',
                         help='Enable debug mode')
     args = parser.parse_args()
+
+    if not acquire_single_instance() or server_is_running(args.host, args.port):
+        print(f"Apple Music Downloader is already running at http://127.0.0.1:{args.port}")
+        if not args.headless:
+            webbrowser.open(f'http://127.0.0.1:{args.port}')
+        sys.exit(0)
     
     print("=" * 60)
     print("Apple Music Downloader Web Interface")
@@ -4876,6 +5305,9 @@ if __name__ == '__main__':
     
     # Start Docker and wrapper on startup
     startup_docker_and_wrapper()
+
+    # Start workers only after this process has won the single-instance check.
+    start_background_workers()
     
     # Initialize auto-download scheduler
     initialize_auto_download()

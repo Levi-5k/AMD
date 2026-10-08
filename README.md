@@ -144,7 +144,7 @@ docker run -it --rm ^
 
 **Step 3: Start the wrapper service (run this every time):**
 ```bash
-docker run -d --name amd-wrapper --restart unless-stopped ^
+docker run -d --name amd-wrapper --restart no ^
   -v ./wrapper-data:/app/rootfs/data ^
   -p 10020:10020 -p 20020:20020 -p 30020:30020 ^
   -e args="-H 0.0.0.0" ^

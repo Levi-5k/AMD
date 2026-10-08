@@ -9,6 +9,7 @@ let downloadedFiles = [];  // Store downloaded files
 let currentMetadata = null;  // Store current album/playlist metadata
 let toastEl;
 let toast;
+let downloadRenderTimer = null;
 const artworkCache = {};  // Persistent cache for artwork URLs
 
 // Initialize on page load
@@ -25,7 +26,14 @@ document.addEventListener('DOMContentLoaded', () => {
         loadFiles();
         updateStatus();
         checkWrapperStatus();
+        loadRecentlyPlayed();
         setupEventListeners();
+
+        // Reconcile missed WebSocket events and stale status rows.
+        setInterval(() => {
+            loadDownloads();
+            updateStatus();
+        }, 5000);
         
         // Check for missing packages and show installation UI if needed
         checkAndInstallPackages();
@@ -69,6 +77,8 @@ function initializeSocket() {
     
     socket.on('connect', () => {
         console.log('Connected to server');
+        loadDownloads();
+        updateStatus();
     });
     
     socket.on('disconnect', () => {
@@ -152,6 +162,9 @@ function setupEventListeners() {
     
     // Refresh library button
     document.getElementById('refreshLibraryBtn').addEventListener('click', checkAuthAndLoadLibrary);
+
+    // Refresh recently played button
+    document.getElementById('refreshRecentlyPlayedBtn')?.addEventListener('click', () => loadRecentlyPlayed(true));
     
     // Track selection buttons
     document.getElementById('selectAllTracks').addEventListener('click', selectAllTracks);
@@ -473,6 +486,7 @@ function displayAlbumPreview(response) {
             return {
                 id: track.id || index + 1,
                 number: trackAttrs.trackNumber || index + 1,
+                selectionIndex: index + 1,
                 name: trackAttrs.name || 'Unknown Track',
                 artist: trackAttrs.artistName || artist,
                 duration: Math.floor((trackAttrs.durationInMillis || 0) / 1000),
@@ -505,13 +519,14 @@ function displayAlbumPreview(response) {
     
     // Render tracks list
     if (tracks.length > 0) {
-        tracksList.innerHTML = tracks.map(track => {
+        tracksList.innerHTML = tracks.map((track, index) => {
             const duration = formatDuration(track.duration);
+            const selectionIndex = track.selectionIndex || index + 1;
             return `
                 <div class="form-check track-item">
-                    <input class="form-check-input track-checkbox" type="checkbox" value="${track.number}" 
-                           id="track-${track.number}" checked>
-                    <label class="form-check-label" for="track-${track.number}">
+                    <input class="form-check-input track-checkbox" type="checkbox" value="${selectionIndex}"
+                           id="track-${selectionIndex}" checked>
+                    <label class="form-check-label" for="track-${selectionIndex}">
                         <div>
                             <div>
                                 <span class="track-number text-muted me-1">${track.number}.</span>
@@ -551,11 +566,11 @@ function escapeHtml(text) {
 }
 
 /**
- * Strip file extension from filename (fallback only)
+ * Strip supported audio/video extensions from display names
  */
 function stripExtension(filename) {
     if (!filename) return '';
-    return filename.replace(/\.[^/.]+$/, '');
+    return filename.replace(/\.(?:m4a|mp4|flac|mp3)$/i, '');
 }
 
 /**
@@ -596,8 +611,8 @@ function renderCombinedList() {
     const filesList = document.getElementById('filesList');
     if (!filesList) return;
     
-    // Filter active downloads (queued or downloading)
-    const activeDownloads = downloads.filter(d => d.status === 'queued' || d.status === 'downloading');
+    // Filter active downloads
+    const activeDownloads = downloads.filter(d => ['queued', 'downloading', 'retrying'].includes(d.status));
     
     // Sort: queued first (oldest), then downloading (newest at bottom)
     activeDownloads.sort((a, b) => {
@@ -697,6 +712,7 @@ function renderCombinedList() {
     // Render downloaded files
     html += downloadedFiles.map((file, index) => {
         const searchQuery = `${file.artist || ''} ${file.album || ''}`.trim();
+        const displayName = stripExtension(file.name);
         
         return `
         <div class="file-item" onclick="showFileInfo(${index})">
@@ -705,7 +721,7 @@ function renderCombinedList() {
                     <i class="bi bi-music-note-beamed"></i>
                 </div>
                 <div class="file-details">
-                    <div class="file-name">${escapeHtml(file.name)}</div>
+                    <div class="file-name">${escapeHtml(displayName)}</div>
                     <div class="file-meta">${escapeHtml(file.artist || '')}${file.album ? ' • ' + escapeHtml(file.album) : ''} • ${formatFileSize(file.size)}</div>
                 </div>
             </div>
@@ -727,6 +743,15 @@ function renderCombinedList() {
  */
 function renderDownloadsList() {
     renderCombinedList();
+}
+
+function scheduleDownloadsRender() {
+    if (downloadRenderTimer !== null) return;
+
+    downloadRenderTimer = setTimeout(() => {
+        downloadRenderTimer = null;
+        renderDownloadsList();
+    }, 1000);
 }
 
 /**
@@ -831,8 +856,9 @@ function updateDownloadProgress(data) {
         if (data.line) {
             downloads[index].output = downloads[index].output || [];
             downloads[index].output.push(data.line);
+            downloads[index].output = downloads[index].output.slice(-100);
         }
-        renderDownloadsList();
+        scheduleDownloadsRender();
     }
 }
 
@@ -910,10 +936,11 @@ function showDownloadInfo(downloadId) {
 function showFileInfo(fileIndex) {
     const file = downloadedFiles[fileIndex];
     if (!file) return;
+    const displayName = stripExtension(file.name);
     
     const infoHtml = `
         <div class="mb-3">
-            <h5>${escapeHtml(file.name)}</h5>
+            <h5>${escapeHtml(displayName)}</h5>
             <p class="text-muted mb-2">${escapeHtml(file.artist || '')}${file.album ? ' • ' + escapeHtml(file.album) : ''}</p>
         </div>
         <table class="table table-dark table-sm">
@@ -1017,6 +1044,108 @@ async function checkAuthAndLoadLibrary() {
         signInRequired?.classList.add('d-none');
         playlistsView?.classList.remove('d-none');
         loadLibraryPlaylists();
+    }
+}
+
+/**
+ * Load the user's recently played tracks.
+ */
+let recentlyPlayedTracks = [];
+
+async function loadRecentlyPlayed(forceRefresh = false) {
+    const rail = document.getElementById('recentlyPlayedRail');
+    const refreshButton = document.getElementById('refreshRecentlyPlayedBtn');
+    if (!rail) return;
+
+    refreshButton?.setAttribute('disabled', '');
+    rail.innerHTML = `
+        <div class="recently-played-state text-muted">
+            <span class="spinner-border spinner-border-sm me-2"></span>
+            Loading recently played...
+        </div>
+    `;
+
+    try {
+        const suffix = forceRefresh ? `?refresh=1&_=${Date.now()}` : '';
+        const response = await fetch(`/api/library/recently-played${suffix}`, {
+            cache: forceRefresh ? 'no-store' : 'default'
+        });
+        const data = await response.json();
+
+        if (!data.success) {
+            rail.innerHTML = `
+                <div class="recently-played-state text-muted">
+                    <i class="bi bi-person-lock me-2"></i>
+                    ${escapeHtml(data.error || 'Recently played is unavailable.')}
+                    <a href="/settings#wrapper-setup" class="ms-2">Settings</a>
+                </div>
+            `;
+            return;
+        }
+
+        recentlyPlayedTracks = data.tracks || [];
+        if (recentlyPlayedTracks.length === 0) {
+            rail.innerHTML = `
+                <div class="recently-played-state text-muted">
+                    <i class="bi bi-clock-history me-2"></i>
+                    No recently played tracks yet.
+                </div>
+            `;
+            return;
+        }
+
+        rail.innerHTML = recentlyPlayedTracks.map((track, index) => `
+            <article class="recently-played-item" data-recent-album-index="${index}" tabindex="0" role="button" title="Open ${escapeHtml(track.albumName || track.name)}">
+                <div class="recently-played-artwork">
+                    ${track.artwork
+                        ? `<img src="${escapeHtml(track.artwork)}" alt="${escapeHtml(track.name)} artwork" loading="lazy">`
+                        : `<div class="recently-played-placeholder"><i class="bi bi-music-note-beamed"></i></div>`
+                    }
+                    <button type="button" class="recently-played-download" data-recent-index="${index}" title="Choose tracks from ${escapeHtml(track.name)}" aria-label="Choose tracks from ${escapeHtml(track.name)}">
+                        <i class="bi bi-download"></i>
+                    </button>
+                </div>
+                <div class="recently-played-name" title="${escapeHtml(track.name)}">${escapeHtml(track.name)}</div>
+                <div class="recently-played-artist" title="${escapeHtml(track.artistName)}">${escapeHtml(track.artistName)}</div>
+            </article>
+        `).join('');
+
+        rail.querySelectorAll('[data-recent-album-index]').forEach(card => {
+            const openAlbum = () => {
+                const track = recentlyPlayedTracks[Number(card.dataset.recentAlbumIndex)];
+                if (track?.albumId) {
+                    loadAlbumFromSearch(track.albumId, track.albumName, track.artistName, false, 'recent');
+                } else {
+                    showToast('Album Unavailable', 'Could not find the album for this track.', 'warning');
+                }
+            };
+            card.addEventListener('click', openAlbum);
+            card.addEventListener('keydown', event => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    openAlbum();
+                }
+            });
+        });
+
+        rail.querySelectorAll('[data-recent-index]').forEach(button => {
+            button.addEventListener('click', event => {
+                event.stopPropagation();
+                const track = recentlyPlayedTracks[Number(button.dataset.recentIndex)];
+                if (track?.albumId) {
+                    loadAlbumFromSearch(track.albumId, track.albumName, track.artistName, false, 'recent');
+                }
+            });
+        });
+    } catch (error) {
+        rail.innerHTML = `
+            <div class="recently-played-state text-muted">
+                <i class="bi bi-wifi-off me-2"></i>
+                Could not load recently played tracks.
+            </div>
+        `;
+    } finally {
+        refreshButton?.removeAttribute('disabled');
     }
 }
 
@@ -1255,8 +1384,10 @@ async function downloadSelectedPlaylistTracks() {
             const track = tracks.find(t => t.trackNumber === trackNum);
             return {
                 catalogId,
+                catalogType: track?.catalogType || '',
                 name: track?.name || '',
-                artistName: track?.artistName || ''
+                artistName: track?.artistName || '',
+                artwork: track?.artwork || ''
             };
         })
         .filter(t => t.catalogId);  // Remove tracks without catalog IDs
@@ -1980,6 +2111,8 @@ function setupSearchEventListeners() {
                 showArtistDetail();
             } else if (albumNavigationSource === 'search') {
                 showSearchResults();
+            } else if (albumNavigationSource === 'recent') {
+                document.querySelector('.recently-played-section')?.scrollIntoView({ behavior: 'smooth' });
             }
             
             // Clear navigation state
@@ -2455,9 +2588,9 @@ async function downloadSelectedArtistSongs() {
 /**
  * Load album from search result and display in preview
  */
-async function loadAlbumFromSearch(albumId, albumName, artistName, fromArtist = false) {
+async function loadAlbumFromSearch(albumId, albumName, artistName, fromArtist = false, navigationSource = null) {
     // Track navigation source
-    albumNavigationSource = fromArtist ? 'artist' : 'search';
+    albumNavigationSource = navigationSource || (fromArtist ? 'artist' : 'search');
     
     // Save current search query before replacing with album URL
     previousSearchQuery = document.getElementById('urlInput').value;
@@ -2477,6 +2610,11 @@ async function loadAlbumFromSearch(albumId, albumName, artistName, fromArtist = 
     const albumPreviewHeader = document.getElementById('albumPreviewHeader');
     if (albumPreviewHeader) {
         albumPreviewHeader.classList.remove('d-none');
+    }
+    const backLabel = document.getElementById('albumPreviewBackLabel');
+    if (backLabel) {
+        backLabel.textContent = albumNavigationSource === 'recent' ? 'Back to Recently Played' :
+            albumNavigationSource === 'artist' ? 'Back to artist' : 'Back to search';
     }
     
     // Parse and fetch metadata
